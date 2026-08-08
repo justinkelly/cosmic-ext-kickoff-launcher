@@ -1,0 +1,24 @@
+[package]
+name = "cosmic-kde-menu"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "A KDE-style application menu applet for the COSMIC desktop"
+
+[dependencies]
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+default-features = false
+features = [
+    "applet",
+    "tokio",
+    "wayland",
+    "desktop",
+    "dbus-config",
+]

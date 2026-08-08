@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Cosmic KDE Menu
+Comment=A KDE-style application menu
+Exec=cosmic-kde-menu
+Terminal=false
+Type=Application
+StartupNotify=true
+Icon=com.system76.CosmicAppLibrary
+Categories=COSMIC;
+Keywords=COSMIC;Menu;Launcher;KDE;
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+X-OverflowPriority=50
