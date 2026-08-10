@@ -1,7 +1,7 @@
 [Desktop Entry]
-Name=Cosmic KDE Menu
+Name=KDE Launcher for Cosmic
 Comment=A KDE-style application menu
-Exec=cosmic-kde-menu
+Exec=cosmic-kde-launcher
 Terminal=false
 Type=Application
 StartupNotify=true

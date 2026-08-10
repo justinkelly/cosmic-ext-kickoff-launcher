@@ -3,11 +3,84 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Menu size presets — avoids hardcoded pixel sizes that don't scale.
+/// Layout mode for the application listing.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutMode {
+    /// Icon grid layout (all apps)
+    #[default]
+    Grid,
+    /// List layout with cards (all apps)
+    List,
+    /// Hybrid: Favourites + Recents in grid, everything else in list
+    Hybrid,
+}
+
+impl LayoutMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            LayoutMode::Grid => "Grid View",
+            LayoutMode::List => "List View",
+            LayoutMode::Hybrid => "Hybrid View",
+        }
+    }
+
+    pub fn icon_name(&self) -> &'static str {
+        match self {
+            LayoutMode::Grid => "view-grid-symbolic",
+            LayoutMode::List => "view-list-symbolic",
+            LayoutMode::Hybrid => "view-grid-symbolic", // grid icon for hybrid
+        }
+    }
+
+    /// Next mode in the cycle: Grid → List → Hybrid → Grid
+    pub fn next(self) -> Self {
+        match self {
+            LayoutMode::Grid => LayoutMode::List,
+            LayoutMode::List => LayoutMode::Hybrid,
+            LayoutMode::Hybrid => LayoutMode::Grid,
+        }
+    }
+}
+
+// Custom serde: accepts both bool (old configs) and string (new configs).
+impl Serialize for LayoutMode {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(match self {
+            LayoutMode::Grid => "grid",
+            LayoutMode::List => "list",
+            LayoutMode::Hybrid => "hybrid",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for LayoutMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = LayoutMode;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("\"grid\", \"list\", \"hybrid\", or boolean")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<LayoutMode, E> {
+                Ok(if v { LayoutMode::Grid } else { LayoutMode::List })
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<LayoutMode, E> {
+                match v {
+                    "grid" => Ok(LayoutMode::Grid),
+                    "list" => Ok(LayoutMode::List),
+                    "hybrid" => Ok(LayoutMode::Hybrid),
+                    _ => Err(E::custom(format!("unknown layout mode: {}", v))),
+                }
+            }
+        }
+        d.deserialize_any(Visitor)
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SizePreset {
     Small,
     Medium,
+    MediumTall,
     Large,
 }
 
@@ -16,6 +89,7 @@ impl SizePreset {
         match self {
             SizePreset::Small => 600.0,
             SizePreset::Medium => 800.0,
+            SizePreset::MediumTall => 800.0,
             SizePreset::Large => 1000.0,
         }
     }
@@ -23,6 +97,7 @@ impl SizePreset {
         match self {
             SizePreset::Small => 480.0,
             SizePreset::Medium => 640.0,
+            SizePreset::MediumTall => 800.0,
             SizePreset::Large => 780.0,
         }
     }
@@ -30,10 +105,16 @@ impl SizePreset {
         match self {
             SizePreset::Small => "Small",
             SizePreset::Medium => "Medium",
+            SizePreset::MediumTall => "Medium Tall",
             SizePreset::Large => "Large",
         }
     }
-    pub const ALL: [SizePreset; 3] = [SizePreset::Small, SizePreset::Medium, SizePreset::Large];
+    pub const ALL: [SizePreset; 4] = [
+        SizePreset::Small,
+        SizePreset::Medium,
+        SizePreset::MediumTall,
+        SizePreset::Large,
+    ];
 
     /// Override pixel width (0 = use preset).
     pub fn effective_width(&self, custom: f32) -> f32 {
@@ -48,8 +129,10 @@ impl SizePreset {
 /// Applet configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppletConfig {
-    /// Whether to use a grid layout (true) or list layout (false)
-    pub use_grid: bool,
+    /// Layout mode: Grid, List, or Hybrid (Favs+Recents grid, rest list).
+    /// Stored as `use_grid` in TOML for backward compat (old bool → Grid/List).
+    #[serde(rename = "use_grid", default)]
+    pub layout_mode: LayoutMode,
     /// Number of columns in the app grid
     pub grid_columns: usize,
     /// App icon size in pixels (24-56)
@@ -76,12 +159,20 @@ pub struct AppletConfig {
     /// Favourited app IDs.
     #[serde(default)]
     pub favourites: Vec<String>,
+    /// Default menu category on open: "all", "favourites", or "recents".
+    #[serde(default = "default_category")]
+    pub default_category: String,
+    /// Hide the category sidebar when the menu first opens.
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
 }
+
+fn default_category() -> String { "all".into() }
 
 impl Default for AppletConfig {
     fn default() -> Self {
         Self {
-            use_grid: true,
+            layout_mode: LayoutMode::Grid,
             grid_columns: 6,
             icon_size: 48.0,
             size_preset: SizePreset::Medium,
@@ -94,6 +185,8 @@ impl Default for AppletConfig {
             show_recents: true,
             recents: Vec::new(),
             favourites: Vec::new(),
+            default_category: "all".into(),
+            sidebar_collapsed: false,
         }
     }
 }
@@ -108,7 +201,7 @@ impl AppletConfig {
         } else {
             PathBuf::from(".")
         };
-        base.join("cosmic-kde-menu").join("config.toml")
+        base.join("cosmic-kde-launcher").join("config.toml")
     }
 
     /// Load config from disk, falling back to defaults.
@@ -178,10 +271,5 @@ impl AppletConfig {
             self.favourites.push(app_id.to_string());
             true
         }
-    }
-
-    /// Check if an app is favourited.
-    pub fn is_favourite(&self, app_id: &str) -> bool {
-        self.favourites.iter().any(|id| id == app_id)
     }
 }

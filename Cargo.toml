@@ -1,9 +1,9 @@
 [package]
-name = "cosmic-kde-menu"
+name = "cosmic-kde-launcher"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
-description = "A KDE-style application menu applet for the COSMIC desktop"
+description = "KDE Launcher for Cosmic — a KDE-style application menu applet"
 
 [dependencies]
 env_logger = "0.11"
