@@ -35,7 +35,7 @@ use std::sync::{Arc, LazyLock};
 
 const APP_ID: &str = "com.github.cosmic-kde-launcher";
 const LIST_ICON_SIZE: u16 = 48;
-const SIDEBAR_WIDTH: f32 = 220.0;
+const SIDEBAR_WIDTH: f32 = 240.0;
 static SEARCH_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(cosmic::widget::Id::unique);
 static SCROLLABLE_ID: LazyLock<cosmic::widget::Id> =
@@ -862,7 +862,7 @@ impl Applet {
                 .into_container()
                 .width(Length::Fixed(SIDEBAR_WIDTH))
                 .height(Length::Fill)
-                .padding([0, space_xxs, space_xxs, 0])
+                .padding([space_xxs, space_xxs, space_xxs, space_xxs])
                 .into()
         };
 
@@ -1030,7 +1030,8 @@ impl Applet {
             .height(Length::Fill)
             .into()
         } else {
-            // List view — Cosmic Store card grid
+            // Virtualized list view — only renders rows intersecting the
+            // viewport, matching the grid view's approach for performance.
             let mut list_width = menu_width as usize;
             list_width = list_width.saturating_sub(space_xs as usize * 2);
             if !self.sidebar_collapsed {
@@ -1046,53 +1047,60 @@ impl Applet {
                 column_spacing,
             } = list_grid_metrics(space_xxs, space_s, list_width);
 
-            let mut rows: Vec<Element<'_, Message>> = Vec::new();
-            let mut row_children: Vec<Element<'_, Message>> = Vec::new();
-            for (index, app) in self.available_applications.iter().enumerate() {
-                let is_fav = fav_set.contains(app.id.as_str());
-                let is_pinned = pinned_set.contains(app.id.as_str());
-                let fav_label = if is_fav { "Unfavourite" } else { "Favourite" };
-                let pin_label = if is_pinned { "Unpin from Tray" } else { "Pin to Tray" };
-                let pin_action = if is_pinned {
-                    AppContextAction::UnpinFromTray(index)
-                } else {
-                    AppContextAction::PinToTray(index)
-                };
-                let ctx_menu = menu::items(
-                    &EMPTY_MENU_KEYBINDS,
-                    vec![
-                        menu::Item::Button(fav_label, None, AppContextAction::ToggleFav(index)),
-                        menu::Item::Button(pin_label, None, pin_action),
-                    ],
-                );
-                row_children.push(app_list_card(
-                    app,
-                    space_xxs,
-                    space_s,
-                    item_width,
-                    index,
-                    is_fav,
-                    is_pinned,
-                    ctx_menu,
-                ));
-                if row_children.len() >= cols {
-                    rows.push(row(row_children).spacing(column_spacing).into());
-                    row_children = Vec::new();
-                }
+            let apps = &self.available_applications;
+            let total_rows = if apps.is_empty() || cols == 0 { 0 } else { (apps.len() + cols - 1) / cols };
+            let card_height = LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0 + 40.0;
+            let row_stride = card_height + column_spacing as f32;
+            let content_h = if total_rows == 0 { 0.0 } else { total_rows as f32 * row_stride - column_spacing as f32 };
+
+            // Virtualize: only render rows near the viewport.
+            let viewport_h = if self.grid_viewport_h > 0.0 { self.grid_viewport_h } else { menu_height };
+            let scroll = self.grid_scroll_y.clamp(0.0, (content_h - viewport_h).max(0.0));
+            let first_row = if scroll <= row_stride { 0usize } else { ((scroll / row_stride) as usize).saturating_sub(1) };
+            let last_row = ((scroll + viewport_h) / row_stride).ceil() as usize;
+            let last_row = last_row.min(total_rows.saturating_sub(1)).saturating_add(1).min(total_rows.saturating_sub(1));
+
+            let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(last_row.saturating_sub(first_row) + 3);
+            if first_row > 0 {
+                let top_h = (first_row as f32 * row_stride - column_spacing as f32).max(0.0);
+                rows.push(Space::new().height(Length::Fixed(top_h)).into());
             }
-            if !row_children.is_empty() {
-                rows.push(row(row_children).spacing(column_spacing).into());
+            for row_idx in first_row..=last_row {
+                let start = row_idx * cols;
+                let end = (start + cols).min(apps.len());
+                let mut row_children: Vec<Element<'_, Message>> = Vec::with_capacity(cols);
+                for i in start..end {
+                    let app = &apps[i];
+                    let is_fav = fav_set.contains(app.id.as_str());
+                    let is_pinned = pinned_set.contains(app.id.as_str());
+                    let fav_label = if is_fav { "Unfavourite" } else { "Favourite" };
+                    let pin_label = if is_pinned { "Unpin from Tray" } else { "Pin to Tray" };
+                    let pin_action = if is_pinned { AppContextAction::UnpinFromTray(i) } else { AppContextAction::PinToTray(i) };
+                    let ctx_menu = menu::items(&EMPTY_MENU_KEYBINDS, vec![
+                        menu::Item::Button(fav_label, None, AppContextAction::ToggleFav(i)),
+                        menu::Item::Button(pin_label, None, pin_action),
+                    ]);
+                    let icon = self.cached_icon(app, LIST_ICON_SIZE as f32);
+                    row_children.push(app_list_card(app, icon, space_xxs, space_s, item_width, i, is_fav, is_pinned, ctx_menu));
+                }
+                let missing = cols.saturating_sub(row_children.len());
+                for _ in 0..missing {
+                    row_children.push(Space::new().width(Length::Fixed(item_width as f32)).into());
+                }
+                rows.push(row(row_children).spacing(column_spacing).width(Length::Fill).into());
+            }
+            if last_row < total_rows.saturating_sub(1) {
+                let bottom_h = content_h - (last_row as f32 * row_stride + card_height) - column_spacing as f32;
+                if bottom_h > 0.0 {
+                    rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
+                }
             }
 
             container(
-                scrollable(
-                    column(rows).spacing(column_spacing).width(Length::Fill),
-                )
-                .id((*SCROLLABLE_ID).clone())
-                .height(Length::Fill)
-                .on_scroll(|vp| {
-                    Message::GridScrolled(vp.absolute_offset().y, vp.bounds().height)
-                }),
+                scrollable(column(rows).spacing(column_spacing).width(Length::Fill))
+                    .id((*SCROLLABLE_ID).clone())
+                    .height(Length::Fill)
+                    .on_scroll(|vp| Message::GridScrolled(vp.absolute_offset().y, vp.bounds().height)),
             )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1730,18 +1738,34 @@ impl Applet {
         self.rebuild_nav_model();
 
         if let Some(exec) = &app.exec {
-            let cleaned_exec = exec
-                .replace("%f", "").replace("%F", "")
-                .replace("%u", "").replace("%U", "")
-                .replace("%i", "").replace("%c", "").replace("%k", "");
-            let cleaned_exec = cleaned_exec.trim();
-            if !cleaned_exec.is_empty() {
-                if app.is_terminal {
-                    let _ = std::process::Command::new("sh")
-                        .arg("-c").arg(&format!("cosmic-term -- {}", cleaned_exec)).spawn();
-                } else {
-                    let _ = std::process::Command::new("sh")
-                        .arg("-c").arg(cleaned_exec).spawn();
+            // Expand desktop-entry Exec field codes per the spec:
+            //   %% → literal %
+            //   %f/%F/%u/%U → removed (no files/URLs passed by a launcher)
+            //   %i → --icon <icon>
+            //   %c → translated name (use Name)
+            //   %k → desktop file path
+            //   %d/%D/%n/%N/%v/%m → deprecated, removed
+            let expanded = expand_exec_fields(exec, &app);
+            if let Some(argv) = shlex::split(&expanded) {
+                if !argv.is_empty() {
+                    let (program, args) = if app.is_terminal {
+                        // Prepend cosmic-term wrapper
+                        let mut full_args = vec!["cosmic-term".to_string(), "--".to_string()];
+                        full_args.extend(argv.clone());
+                        ("cosmic-term".to_string(), full_args)
+                    } else {
+                        (argv[0].clone(), argv)
+                    };
+                    let mut cmd = std::process::Command::new(&program);
+                    if args.len() > 1 {
+                        cmd.args(&args[1..]);
+                    }
+                    // Detach: don't block the applet, ignore exit status.
+                    // Errors (e.g. binary not found) are logged and swallowed
+                    // because there is no meaningful recovery in a launcher.
+                    if let Err(e) = cmd.spawn() {
+                        tracing::warn!("Failed to launch '{}': {}", program, e);
+                    }
                 }
             }
         }
@@ -1750,6 +1774,83 @@ impl Applet {
         }
         Task::none()
     }
+}
+
+/// Expand desktop-entry Exec field codes per the Freedesktop spec.
+///
+/// Field codes handled:
+///   `%%`  → literal `%`
+///   `%f`  → removed (single file — launcher passes none)
+///   `%F`  → removed (file list — launcher passes none)
+///   `%u`  → removed (single URL — launcher passes none)
+///   `%U`  → removed (URL list — launcher passes none)
+///   `%i`  → `--icon <icon_name>`
+///   `%c`  → translated name (uses the Name field)
+///   `%k`  → desktop file path
+///   `%d`, `%D`, `%n`, `%N`, `%v`, `%m` → removed (deprecated)
+fn expand_exec_fields(exec: &str, app: &ApplicationEntry) -> String {
+    let mut result = String::with_capacity(exec.len());
+    let mut chars = exec.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            result.push(ch);
+            continue;
+        }
+        // Peek at the next character after %
+        match chars.next() {
+            None => {
+                // Trailing % — keep as-is (spec says undefined behaviour)
+                result.push('%');
+            }
+            Some('%') => result.push('%'),
+            Some('f') | Some('F') | Some('u') | Some('U') => {
+                // File/URL placeholders — launcher passes nothing, remove
+            }
+            Some('i') => {
+                if let Some(ref icon) = app.icon {
+                    result.push_str("--icon ");
+                    result.push_str(icon);
+                    result.push(' ');
+                }
+            }
+            Some('c') => {
+                // Translated name — use the Name field as a reasonable default
+                result.push_str(&shell_escape(&app.name));
+            }
+            Some('k') => {
+                // Desktop file path
+                if let Some(path_str) = app.path.to_str() {
+                    result.push_str(&shell_escape(path_str));
+                }
+            }
+            Some('d') | Some('D') | Some('n') | Some('N')
+            | Some('v') | Some('m') => {
+                // Deprecated codes — remove
+            }
+            Some(other) => {
+                // Unknown code — keep as-is per spec
+                result.push('%');
+                result.push(other);
+            }
+        }
+    }
+
+    result.trim().to_string()
+}
+
+/// Minimal shell-escaping for a single argument value (used by %c and %k).
+/// Puts the value in single quotes, escaping any embedded single quotes.
+fn shell_escape(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    // Only escape if needed
+    if value.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/') {
+        return value.to_string();
+    }
+    let escaped = value.replace('\'', "'\\''");
+    format!("'{}'", escaped)
 }
 
 // ── List view helpers (Cosmic Store style) ──
@@ -1783,6 +1884,7 @@ fn list_grid_metrics(space_xxs: u16, space_s: u16, width: usize) -> GridMetrics 
 
 fn app_list_card<'a>(
     app: &'a ApplicationEntry,
+    icon: cosmic::widget::icon::Icon,
     space_xxs: u16,
     space_s: u16,
     width: usize,
@@ -1791,7 +1893,6 @@ fn app_list_card<'a>(
     _is_pinned: bool,
     ctx_menu: Vec<menu::Tree<Message>>,
 ) -> Element<'a, Message> {
-    let icon = app_icon(app, LIST_ICON_SIZE as f32);
     let summary = app
         .description
         .as_deref()
@@ -1820,18 +1921,17 @@ fn app_list_card<'a>(
                 column![
                     name_row,
                     cosmic::widget::text::caption(summary)
-                        .height(Length::Fixed(20.0))
                         .wrapping(cosmic::iced::widget::text::Wrapping::Word),
                 ]
                 .spacing(2),
             ]
             .align_y(Alignment::Center)
-            .spacing(space_s),
+            .spacing(space_xxs),
         )
         .align_y(Alignment::Center)
         .width(Length::Fixed(width as f32))
-        .padding([space_xxs, space_s])
-        .class(theme::Container::Card),
+        .height(Length::Fixed(LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0 + 40.0))
+        .padding([space_xxs, space_s]),
     )
     .on_press(Message::LaunchApp(index));
 

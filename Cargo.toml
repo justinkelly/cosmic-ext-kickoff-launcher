@@ -8,6 +8,7 @@ description = "KDE Launcher for Cosmic — a KDE-style application menu applet"
 [dependencies]
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
+shlex = "1"
 tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 tracing = "0.1"
