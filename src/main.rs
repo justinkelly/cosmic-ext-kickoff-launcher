@@ -40,6 +40,7 @@ static SCROLLABLE_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(cosmic::widget::Id::unique);
 // Context menus never bind keys, so one shared empty key-bind map is reused
 // instead of allocating a fresh HashMap per app cell per view.
+#[allow(dead_code)]
 static EMPTY_MENU_KEYBINDS: LazyLock<
     std::collections::HashMap<menu::KeyBind, AppContextAction>,
 > = LazyLock::new(Default::default);
@@ -99,6 +100,8 @@ pub struct Applet {
     nav_model: segmented_button::SingleSelectModel,
     sidebar_collapsed: bool,
     show_settings: bool,
+    /// The index of the cell whose inline context actions are currently shown.
+    context_menu_target: Option<usize>,
     pinned_apps: Vec<String>,
     /// Scroll offset (px) of the app-grid scrollable, tracked for virtualized
     /// rendering so only rows in the viewport are built each view.
@@ -141,8 +144,11 @@ pub enum Message {
     /// App grid scrolled — carries the absolute vertical offset (px) and the
     /// viewport height (px), used to render only visible rows.
     GridScrolled(f32, f32),
+    /// Right-clicked a cell — toggle inline context actions.
+    AppContextMenu(usize),
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppContextAction {
     ToggleFav(usize),
@@ -198,6 +204,7 @@ impl Application for Applet {
             selected_index: None,
             nav_model: segmented_button::SingleSelectModel::default(),
             show_settings: false,
+            context_menu_target: None,
             pinned_apps,
             grid_scroll_y: 0.0,
             grid_viewport_h: 0.0,
@@ -455,24 +462,37 @@ impl Application for Applet {
                             .width(Length::Fill)
                             .height(Length::Fixed(cell_height));
 
-                        let fav_label = if is_fav { "Unfavourite" } else { "Favourite" };
-                        let is_pinned = pinned_set.contains(app.id.as_str());
-                        let pin_label = if is_pinned { "Unpin from Tray" } else { "Pin to Tray" };
-                        let pin_action = if is_pinned {
-                            AppContextAction::UnpinFromTray(index)
+                        // Inline context actions on right-click instead of
+                        // slow Wayland context_menu popups.
+                        let is_context_target = self.context_menu_target == Some(index);
+                        let cell: Element<'_, Message> = if is_context_target {
+                            let is_pinned = pinned_set.contains(app.id.as_str());
+                            let fav_label = if is_fav { "★ Unfav" } else { "☆ Fav" };
+                            let pin_label = if is_pinned { "📌 Unpin" } else { "📌 Pin" };
+                            column![
+                                mouse_area(btn)
+                                    .on_press(Message::LaunchApp(index))
+                                    .on_right_press(Message::AppContextMenu(index)),
+                                row![
+                                    cosmic::widget::button::standard(fav_label)
+                                        .on_press(Message::ToggleFavourite(index))
+                                        .width(Length::Fill),
+                                    cosmic::widget::button::standard(pin_label)
+                                        .on_press(if is_pinned {
+                                            Message::UnpinFromTray(index)
+                                        } else {
+                                            Message::PinToTray(index)
+                                        })
+                                        .width(Length::Fill),
+                                ].spacing(space_xxs),
+                            ].spacing(space_xxs).into()
                         } else {
-                            AppContextAction::PinToTray(index)
+                            mouse_area(btn)
+                                .on_press(Message::LaunchApp(index))
+                                .on_right_press(Message::AppContextMenu(index))
+                                .into()
                         };
-                        let ctx_menu = menu::items(
-                            &EMPTY_MENU_KEYBINDS,
-                            vec![
-                                menu::Item::Button(fav_label, None, AppContextAction::ToggleFav(index)),
-                                menu::Item::Button(pin_label, None, pin_action),
-                            ],
-                        );
-
-                        cosmic::widget::context_menu(btn, Some(ctx_menu))
-                            .into()
+                        cell
                     })
                     .collect();
 
@@ -1342,6 +1362,15 @@ impl Application for Applet {
             Message::GridScrolled(y, viewport_h) => {
                 self.grid_scroll_y = y;
                 self.grid_viewport_h = viewport_h;
+                self.context_menu_target = None;
+                Task::none()
+            }
+            Message::AppContextMenu(index) => {
+                if self.context_menu_target == Some(index) {
+                    self.context_menu_target = None;
+                } else {
+                    self.context_menu_target = Some(index);
+                }
                 Task::none()
             }
             Message::LaunchApp(index) => {
@@ -1715,7 +1744,7 @@ fn app_list_card<'a>(
     width: usize,
     index: usize,
     is_favourite: bool,
-    is_pinned: bool,
+    _is_pinned: bool,
 ) -> Element<'a, Message> {
     let icon = app_icon(app, LIST_ICON_SIZE as f32);
     let summary = app
@@ -1758,24 +1787,10 @@ fn app_list_card<'a>(
         .padding([space_xxs, space_s])
         .class(theme::Container::Card),
     )
-    .on_press(Message::LaunchApp(index));
+    .on_press(Message::LaunchApp(index))
+    .on_right_press(Message::AppContextMenu(index));
 
-    let fav_label = if is_favourite { "Unfavourite" } else { "Favourite" };
-    let pin_label = if is_pinned { "Unpin from Tray" } else { "Pin to Tray" };
-    let pin_action = if is_pinned {
-        AppContextAction::UnpinFromTray(index)
-    } else {
-        AppContextAction::PinToTray(index)
-    };
-    let ctx_menu = menu::items(
-        &EMPTY_MENU_KEYBINDS,
-        vec![
-            menu::Item::Button(fav_label, None, AppContextAction::ToggleFav(index)),
-            menu::Item::Button(pin_label, None, pin_action),
-        ],
-    );
-
-    cosmic::widget::context_menu(card, Some(ctx_menu)).into()
+    card.into()
 }
 
 // ── Icon helpers ──

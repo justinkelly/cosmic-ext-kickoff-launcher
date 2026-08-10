@@ -155,9 +155,17 @@ pub fn load_apps() -> Vec<Arc<ApplicationEntry>> {
         apps.len()
     );
 
-    // Deduplicate by desktop file name
+    // Deduplicate by desktop file name — keep the LAST occurrence since
+    // higher-precedence directories (user ~/.local) are appended later.
     let mut seen = std::collections::HashSet::new();
-    apps.retain(|app| seen.insert(app.id.clone()));
+    let mut deduped: Vec<Arc<ApplicationEntry>> = Vec::with_capacity(apps.len());
+    for app in apps.into_iter().rev() {
+        if seen.insert(app.id.clone()) {
+            deduped.push(app);
+        }
+    }
+    deduped.reverse();
+    let mut apps = deduped;
 
     // Sort by precomputed lowercase name
     apps.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));

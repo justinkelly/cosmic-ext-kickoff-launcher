@@ -82,6 +82,11 @@ pub enum SizePreset {
     Medium,
     MediumTall,
     Large,
+    Tall,
+    /// Square 600×600.
+    Square,
+    /// User-defined size via custom_width / custom_height.
+    Custom,
 }
 
 impl SizePreset {
@@ -91,6 +96,9 @@ impl SizePreset {
             SizePreset::Medium => 800.0,
             SizePreset::MediumTall => 800.0,
             SizePreset::Large => 1000.0,
+            SizePreset::Tall => 500.0,
+            SizePreset::Square => 600.0,
+            SizePreset::Custom => 0.0, // uses custom_width
         }
     }
     pub fn height(&self) -> f32 {
@@ -99,6 +107,9 @@ impl SizePreset {
             SizePreset::Medium => 640.0,
             SizePreset::MediumTall => 800.0,
             SizePreset::Large => 780.0,
+            SizePreset::Tall => 900.0,
+            SizePreset::Square => 600.0,
+            SizePreset::Custom => 0.0, // uses custom_height
         }
     }
     pub fn label(&self) -> &'static str {
@@ -107,22 +118,34 @@ impl SizePreset {
             SizePreset::Medium => "Medium",
             SizePreset::MediumTall => "Medium Tall",
             SizePreset::Large => "Large",
+            SizePreset::Tall => "Tall",
+            SizePreset::Square => "Square",
+            SizePreset::Custom => "Custom",
         }
     }
-    pub const ALL: [SizePreset; 4] = [
+    pub const ALL: [SizePreset; 7] = [
         SizePreset::Small,
         SizePreset::Medium,
         SizePreset::MediumTall,
         SizePreset::Large,
+        SizePreset::Tall,
+        SizePreset::Square,
+        SizePreset::Custom,
     ];
 
     /// Override pixel width (0 = use preset).
     pub fn effective_width(&self, custom: f32) -> f32 {
-        if custom > 0.0 { custom } else { self.width() }
+        match self {
+            SizePreset::Custom => custom.max(400.0),
+            _ => if custom > 0.0 { custom } else { self.width() },
+        }
     }
     /// Override pixel height (0 = use preset).
     pub fn effective_height(&self, custom: f32) -> f32 {
-        if custom > 0.0 { custom } else { self.height() }
+        match self {
+            SizePreset::Custom => custom.max(300.0),
+            _ => if custom > 0.0 { custom } else { self.height() },
+        }
     }
 }
 
@@ -238,6 +261,13 @@ impl AppletConfig {
         }
         if self.icon_size < 24.0 || self.icon_size > 56.0 {
             self.icon_size = 48.0;
+        }
+        // Clamp custom dimensions to reasonable bounds.
+        if self.custom_width > 0.0 && self.custom_width < 400.0 {
+            self.custom_width = 400.0;
+        }
+        if self.custom_height > 0.0 && self.custom_height < 300.0 {
+            self.custom_height = 300.0;
         }
     }
 
