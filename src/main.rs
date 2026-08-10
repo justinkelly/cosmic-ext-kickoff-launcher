@@ -1800,7 +1800,7 @@ fn app_list_card<'a>(
 
     let name_row: Element<'_, Message> = if is_favourite {
         let star = cosmic::widget::icon::from_name("starred-symbolic")
-            .symbolic(true).size(12).icon();
+            .symbolic(true).size(14).icon();
         row![
             cosmic::widget::text::body(&app.name)
                 .wrapping(cosmic::iced::widget::text::Wrapping::Word),
@@ -1819,16 +1819,17 @@ fn app_list_card<'a>(
                 icon,
                 column![
                     name_row,
-                    cosmic::widget::text::caption(summary).height(Length::Fixed(28.0)),
+                    cosmic::widget::text::caption(summary)
+                        .height(Length::Fixed(20.0))
+                        .wrapping(cosmic::iced::widget::text::Wrapping::Word),
                 ]
-                .spacing(space_xxs),
+                .spacing(2),
             ]
             .align_y(Alignment::Center)
             .spacing(space_s),
         )
         .align_y(Alignment::Center)
         .width(Length::Fixed(width as f32))
-        .height(Length::Fixed(64.0 + (space_xxs as f32) * 2.0))
         .padding([space_xxs, space_s])
         .class(theme::Container::Card),
     )
