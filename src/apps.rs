@@ -46,7 +46,7 @@ impl ApplicationCategory {
         ApplicationCategory {
             key: "all".to_string(),
             display_name: "All".to_string(),
-            icon_name: "applications-all-symbolic".to_string(),
+            icon_name: "applications-system-symbolic".to_string(),
         }
     }
 

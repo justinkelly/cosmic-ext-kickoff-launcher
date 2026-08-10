@@ -20,15 +20,17 @@ use cosmic::iced::{
     window::Id,
     Alignment, Length, Limits,
 };
-use cosmic::surface::action::{app_popup, app_window, destroy_popup, destroy_window, LiveSettings};
+use cosmic::surface::action::{app_popup, destroy_popup, LiveSettings};
 use cosmic::theme;
 use cosmic::widget::{
-    grid, menu, mouse_area, nav_bar, nav_bar_toggle, segmented_button,
+    dropdown, menu, mouse_area, nav_bar, nav_bar_toggle, segmented_button,
 };
 use cosmic::{Application, Element};
 
 use apps::{ApplicationCategory, ApplicationEntry};
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 const APP_ID: &str = "com.github.cosmic-kde-launcher";
@@ -87,8 +89,7 @@ impl PowerAction {
 pub struct Applet {
     core: Core,
     popup: Option<Id>,
-    window_id: Option<Id>,
-    window_maximized: bool,
+    is_window_mode: bool,
     search_field: String,
     search_active: bool,
     all_applications: Vec<Arc<ApplicationEntry>>,
@@ -96,11 +97,12 @@ pub struct Applet {
     available_categories: Vec<ApplicationCategory>,
     selected_category: Option<ApplicationCategory>,
     config: AppletConfig,
+    custom_width_input: String,
+    custom_height_input: String,
     selected_index: Option<usize>,
     nav_model: segmented_button::SingleSelectModel,
     sidebar_collapsed: bool,
     show_settings: bool,
-    /// The index of the cell whose inline context actions are currently shown.
     context_menu_target: Option<usize>,
     pinned_apps: Vec<String>,
     /// Scroll offset (px) of the app-grid scrollable, tracked for virtualized
@@ -108,6 +110,9 @@ pub struct Applet {
     grid_scroll_y: f32,
     /// Height (px) of the app-grid viewport, from the scrollable's viewport.
     grid_viewport_h: f32,
+    icon_cache: RefCell<HashMap<(String, u16), cosmic::widget::icon::Icon>>,
+    cached_fav_ids: RefCell<HashSet<String>>,
+    cached_pinned_ids: RefCell<HashSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +120,7 @@ pub enum Message {
     TogglePopup,
     PopupClosed(Id),
     ClosePopup,
+    LaunchWindow,
     SearchInput(String),
     SearchCleared,
     ToggleSearch,
@@ -126,6 +132,9 @@ pub enum Message {
     ToggleSidebar,
     ToggleSettings,
     SetSizePreset(config::SizePreset),
+    SetCustomWidth(String),
+    SetCustomHeight(String),
+    ApplyCustomSize,
     SetPanelIcon(String),
     TogglePanelIconSymbolic,
     ToggleShowFavourites,
@@ -136,15 +145,12 @@ pub enum Message {
     SetDefaultCategory(String),
     ToggleSidebarDefault,
     Surface(cosmic::surface::Action),
-    ToggleFullWindow,
-    WindowMinimize,
-    WindowToggleMaximize,
     PowerAction(PowerAction),
     CategoryActivated(segmented_button::Entity),
     /// App grid scrolled — carries the absolute vertical offset (px) and the
     /// viewport height (px), used to render only visible rows.
     GridScrolled(f32, f32),
-    /// Right-clicked a cell — toggle inline context actions.
+    WindowResized(cosmic::iced::Size),
     AppContextMenu(usize),
 }
 
@@ -191,8 +197,7 @@ impl Application for Applet {
         let mut applet = Self {
             core,
             popup: None,
-            window_id: None,
-            window_maximized: false,
+            is_window_mode: std::env::args().any(|a| a == "--window"),
             search_field: String::new(),
             search_active: false,
             all_applications: apps.clone(),
@@ -201,19 +206,33 @@ impl Application for Applet {
             selected_category: None,
             sidebar_collapsed: config.sidebar_collapsed,
             config,
+            custom_width_input: String::new(),
+            custom_height_input: String::new(),
             selected_index: None,
             nav_model: segmented_button::SingleSelectModel::default(),
             show_settings: false,
             context_menu_target: None,
-            pinned_apps,
+            pinned_apps: pinned_apps.clone(),
             grid_scroll_y: 0.0,
             grid_viewport_h: 0.0,
+            icon_cache: RefCell::new(HashMap::new()),
+            cached_fav_ids: RefCell::new(HashSet::new()),
+            cached_pinned_ids: RefCell::new(HashSet::new()),
         };
+        for id in &pinned_apps {
+            applet.cached_pinned_ids.borrow_mut().insert(id.clone());
+        }
+        for id in &applet.config.favourites {
+            applet.cached_fav_ids.borrow_mut().insert(id.clone());
+        }
         applet.rebuild_nav_model();
         (applet, Task::none())
     }
 
     fn view(&self) -> Element<'_, Message> {
+        if self.is_window_mode {
+            return self.build_menu_view(false);
+        }
         let icon_name: &str = if self.config.panel_icon.is_empty() {
             "com.system76.CosmicAppLibrary"
         } else {
@@ -234,9 +253,528 @@ impl Application for Applet {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Message> {
+        self.build_menu_view(true)
+    }
+
+    fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
+        match message {
+            Message::Surface(a) => {
+                return cosmic::task::message(cosmic::Action::Cosmic(
+                    cosmic::app::Action::Surface(a),
+                ));
+            }
+            Message::TogglePopup => {
+                if let Some(p) = self.popup.take() {
+                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))));
+                }
+                self.search_field.clear();
+                self.search_active = false;
+                self.selected_index = None;
+                self.grid_scroll_y = 0.0;
+                self.grid_viewport_h = 0.0;
+                self.sidebar_collapsed = self.config.sidebar_collapsed;
+                // Use cached apps from init — a background refresh task
+                // keeps them up to date without blocking the UI.
+                self.available_applications = self.all_applications.clone();
+                self.rebuild_nav_model();
+
+                // Apply default category from config
+                let default_key = &self.config.default_category;
+                let default_cat = match default_key.as_str() {
+                    "favourites" => {
+                        let mut fav_apps = apps::filter_by_ids(&self.all_applications, &self.config.favourites);
+                        fav_apps.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
+                        self.available_applications = fav_apps;
+                        Some(ApplicationCategory::favourites())
+                    }
+                    "recents" => {
+                        let rec_apps = apps::filter_by_ids(&self.all_applications, &self.config.recents);
+                        self.available_applications = rec_apps;
+                        Some(ApplicationCategory::recents())
+                    }
+                    _ => {
+                        Some(ApplicationCategory::all())
+                    }
+                };
+                self.selected_category = default_cat;
+                // Activate the matching nav entity
+                if let Some(ref cat) = self.selected_category {
+                    let entity = self.nav_model.iter().find(|&entity| {
+                        self.nav_model.data::<ApplicationCategory>(entity)
+                            .map_or(false, |c| c.key == cat.key)
+                    });
+                    if let Some(entity) = entity {
+                        self.nav_model.activate(entity);
+                    }
+                }
+
+                let new_id = Id::unique();
+                self.popup = Some(new_id);
+
+                let popup_width = self.config.max_width() as u32;
+                let popup_height = self.config.max_height() as u32;
+                let anchor = self.core.applet.anchor;
+                let max_width = self.config.max_width();
+                let max_height = self.config.max_height();
+
+                Task::done(cosmic::Action::App(Message::Surface(app_popup::<Applet>(
+                    |_| LiveSettings::default(),
+                    move |state: &mut Applet| {
+                        state.popup = Some(new_id);
+                        let mut popup_settings = state.core.applet.get_popup_settings(
+                            state.core.main_window_id().unwrap(), new_id,
+                            Some((popup_width, popup_height)),
+                            None, None,
+                        );
+                        let (a, g) = match anchor {
+                            PanelAnchor::Top => (Anchor::BottomLeft, Gravity::BottomRight),
+                            PanelAnchor::Bottom => (Anchor::TopLeft, Gravity::TopRight),
+                            PanelAnchor::Left => (Anchor::TopRight, Gravity::BottomRight),
+                            PanelAnchor::Right => (Anchor::TopLeft, Gravity::BottomLeft),
+                        };
+                        popup_settings.positioner.anchor = a;
+                        popup_settings.positioner.gravity = g;
+                        popup_settings.positioner.size = Some((popup_width, popup_height));
+                        popup_settings.positioner.size_limits = Limits::NONE
+                            .min_width(max_width)
+                            .min_height(max_height)
+                            .max_width(max_width)
+                            .max_height(max_height);
+                        popup_settings
+                    },
+                    None,
+                ))))
+            }
+            Message::PopupClosed(id) => {
+                if self.popup == Some(id) { self.popup = None; }
+                Task::none()
+            }
+            Message::ClosePopup => {
+                if let Some(p) = self.popup.take() { return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p)))); }
+                Task::none()
+            }
+            Message::LaunchWindow => {
+                let _ = std::process::Command::new("cosmic-kde-launcher").arg("--window").spawn();
+                if let Some(p) = self.popup.take() {
+                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))));
+                }
+                Task::none()
+            }
+            Message::SearchInput(input) => {
+                // Guard: skip if input hasn't changed.
+                if input == self.search_field {
+                    return Task::none();
+                }
+                self.search_field = input.clone();
+                self.selected_index = None;
+                self.grid_scroll_y = 0.0;
+                self.available_applications = if input.is_empty() {
+                    self.all_applications.clone()
+                } else {
+                    apps::filter_apps(&self.all_applications, &input)
+                };
+                // Keep "All Applications" selected while searching
+                self.selected_category = Some(ApplicationCategory::all());
+                let all_entity = self.nav_model.iter().find(|&entity| {
+                    self.nav_model.data::<ApplicationCategory>(entity)
+                        .map_or(false, |cat| cat.key == "all")
+                });
+                if let Some(entity) = all_entity {
+                    self.nav_model.activate(entity);
+                }
+                self.reset_grid_scroll()
+            }
+            Message::SearchCleared => {
+                self.search_field.clear();
+                self.search_active = false;
+                self.selected_index = None;
+                self.available_applications = self.all_applications.clone();
+                self.selected_category = Some(ApplicationCategory::all());
+                // Find and activate the "All" entity
+                let all_entity = self.nav_model.iter().find(|&entity| {
+                    self.nav_model.data::<ApplicationCategory>(entity)
+                        .map_or(false, |cat| cat.key == "all")
+                });
+                if let Some(entity) = all_entity {
+                    self.nav_model.activate(entity);
+                }
+                self.reset_grid_scroll()
+            }
+            Message::ToggleSearch => {
+                self.search_active = !self.search_active;
+                if self.search_active {
+                    self.search_field.clear();
+                    self.selected_index = None;
+                    self.available_applications = self.all_applications.clone();
+                    // Keep "All Applications" selected in sidebar
+                    self.selected_category = Some(ApplicationCategory::all());
+                    let all_entity = self.nav_model.iter().find(|&entity| {
+                        self.nav_model.data::<ApplicationCategory>(entity)
+                            .map_or(false, |cat| cat.key == "all")
+                    });
+                    if let Some(entity) = all_entity {
+                        self.nav_model.activate(entity);
+                    }
+                    let focus_id = (*SEARCH_ID).clone();
+                    let focus = cosmic::widget::text_input::focus(focus_id);
+                    let reset = self.reset_grid_scroll();
+                    return Task::batch([focus, reset]);
+                } else {
+                    // Closing search — restore "All Applications"
+                    self.search_field.clear();
+                    self.selected_index = None;
+                    self.available_applications = self.all_applications.clone();
+                    self.selected_category = Some(ApplicationCategory::all());
+                    let all_entity = self.nav_model.iter().find(|&entity| {
+                        self.nav_model.data::<ApplicationCategory>(entity)
+                            .map_or(false, |cat| cat.key == "all")
+                    });
+                    if let Some(entity) = all_entity {
+                        self.nav_model.activate(entity);
+                    }
+                }
+                self.reset_grid_scroll()
+            }
+            Message::CategoryActivated(entity) => {
+                self.search_field.clear();
+                self.search_active = false;
+                self.selected_index = None;
+                self.nav_model.activate(entity);
+                if let Some(cat) = self.nav_model.data::<ApplicationCategory>(entity) {
+                    let cat = cat.clone();
+                    self.selected_category = Some(cat.clone());
+                    self.available_applications = match cat.key.as_str() {
+                        "favourites" => {
+                            let mut favs = apps::filter_by_ids(&self.all_applications, &self.config.favourites);
+                            favs.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
+                            favs
+                        }
+                        "recents" => apps::filter_by_ids(&self.all_applications, &self.config.recents),
+                        _ => apps::filter_apps_by_category(&self.all_applications, &cat),
+                    };
+                }
+                self.reset_grid_scroll()
+            }
+            Message::GridScrolled(y, viewport_h) => {
+                self.grid_scroll_y = y;
+                self.grid_viewport_h = viewport_h;
+                self.context_menu_target = None;
+                Task::none()
+            }
+            Message::AppContextMenu(index) => {
+                if self.context_menu_target == Some(index) {
+                    self.context_menu_target = None;
+                } else {
+                    self.context_menu_target = Some(index);
+                }
+                Task::none()
+            }
+            Message::WindowResized(size) => {
+                if self.is_window_mode && size.width >= 400.0 && size.height >= 300.0
+                    && (self.config.size_preset != config::SizePreset::Custom
+                        || (size.width - self.config.custom_width).abs() > 1.0
+                        || (size.height - self.config.custom_height).abs() > 1.0)
+                {
+                    self.config.size_preset = config::SizePreset::Custom;
+                    self.config.custom_width = size.width;
+                    self.config.custom_height = size.height;
+                    self.custom_width_input = format!("{}", size.width as u32);
+                    self.custom_height_input = format!("{}", size.height as u32);
+                    self.config.save();
+                }
+                Task::none()
+            }
+            Message::LaunchApp(index) => {
+                self.context_menu_target = None;
+                if let Some(app) = self.available_applications.get(index).cloned() {
+                    return self.launch_application(app);
+                }
+                Task::none()
+            }
+            Message::SelectNext => {
+                if self.available_applications.is_empty() { return Task::none(); }
+                match self.selected_index {
+                    None => self.selected_index = Some(0),
+                    Some(i) if i + 1 < self.available_applications.len() => {
+                        self.selected_index = Some(i + 1);
+                    }
+                    _ => {}
+                }
+                Task::none()
+            }
+            Message::SelectPrevious => {
+                match self.selected_index {
+                    Some(0) | None => self.selected_index = None,
+                    Some(i) => self.selected_index = Some(i - 1),
+                }
+                Task::none()
+            }
+            Message::LaunchSelected => {
+                if let Some(i) = self.selected_index {
+                    if let Some(app) = self.available_applications.get(i).cloned() {
+                        return self.launch_application(app);
+                    }
+                }
+                Task::none()
+            }
+            Message::ToggleLayout(mode) => {
+                self.config.layout_mode = mode;
+                self.config.save();
+                self.show_settings = false;
+                Task::none()
+            }
+            Message::ToggleSidebar => {
+                self.sidebar_collapsed = !self.sidebar_collapsed;
+                // The category-title row appears/disappears above the app grid,
+                // changing the grid viewport height — re-sync the scroll state.
+                self.reset_grid_scroll()
+            }
+            Message::ToggleSettings => {
+                self.show_settings = !self.show_settings;
+                Task::none()
+            }
+            Message::SetSizePreset(preset) => {
+                self.config.size_preset = preset;
+                if preset != config::SizePreset::Custom {
+                    self.config.custom_width = 0.0;
+                    self.config.custom_height = 0.0;
+                    self.custom_width_input.clear();
+                    self.custom_height_input.clear();
+                }
+                self.config.save();
+                self.reset_grid_scroll()
+            }
+            Message::SetCustomWidth(value) => {
+                self.custom_width_input = value;
+                Task::none()
+            }
+            Message::SetCustomHeight(value) => {
+                self.custom_height_input = value;
+                Task::none()
+            }
+            Message::ApplyCustomSize => {
+                if let Ok(w) = self.custom_width_input.parse::<f32>() {
+                    if w >= 400.0 {
+                        self.config.custom_width = w;
+                        self.config.size_preset = config::SizePreset::Custom;
+                    }
+                }
+                if let Ok(h) = self.custom_height_input.parse::<f32>() {
+                    if h >= 300.0 {
+                        self.config.custom_height = h;
+                        self.config.size_preset = config::SizePreset::Custom;
+                    }
+                }
+                self.config.save();
+                Task::none()
+            }
+            Message::SetPanelIcon(icon) => {
+                self.config.panel_icon = icon;
+                self.config.save();
+                Task::none()
+            }
+            Message::TogglePanelIconSymbolic => {
+                self.config.panel_icon_symbolic = !self.config.panel_icon_symbolic;
+                self.config.save();
+                Task::none()
+            }
+            Message::ToggleShowFavourites => {
+                self.config.show_favourites = !self.config.show_favourites;
+                self.config.save();
+                self.rebuild_nav_model();
+                Task::none()
+            }
+            Message::ToggleShowRecents => {
+                self.config.show_recents = !self.config.show_recents;
+                self.config.save();
+                self.rebuild_nav_model();
+                Task::none()
+            }
+            Message::ToggleSidebarDefault => {
+                self.config.sidebar_collapsed = !self.config.sidebar_collapsed;
+                self.config.save();
+                Task::none()
+            }
+            Message::SetDefaultCategory(cat) => {
+                self.config.default_category = cat;
+                self.config.save();
+                Task::none()
+            }
+            Message::ToggleFavourite(index) => {
+                if let Some(app) = self.available_applications.get(index) {
+                    let app_id = app.id.clone();
+                    let was_empty = self.config.favourites.is_empty();
+                    let now_fav = self.config.toggle_favourite(&app_id);
+                    self.config.save();
+                    if now_fav {
+                        self.cached_fav_ids.borrow_mut().insert(app_id.clone());
+                    } else {
+                        self.cached_fav_ids.borrow_mut().remove(&app_id);
+                    }
+                    if was_empty && now_fav && self.config.default_category == "all" {
+                        self.config.default_category = "favourites".into();
+                        self.config.save();
+                    }
+                    // Rebuild nav to show/hide Favourites entry
+                    self.rebuild_nav_model();
+                    // If viewing favourites and unfavourited, refresh list
+                    if let Some(ref cat) = self.selected_category {
+                        if cat.key == "favourites" {
+                            let mut favs = apps::filter_by_ids(&self.all_applications, &self.config.favourites);
+                            favs.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
+                            self.available_applications = favs;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::PinToTray(index) => {
+                if let Some(app) = self.available_applications.get(index) {
+                    let app_id = app.id.clone();
+                    self.pinned_apps = self.pin_app_to_dock(&app_id);
+                    self.cached_pinned_ids.borrow_mut().insert(app_id);
+                }
+                Task::none()
+            }
+            Message::UnpinFromTray(index) => {
+                if let Some(app) = self.available_applications.get(index) {
+                    let app_id = app.id.clone();
+                    self.pinned_apps = self.unpin_app_from_dock(&app_id);
+                    self.cached_pinned_ids.borrow_mut().remove(&app_id);
+                }
+                Task::none()
+            }
+            Message::PowerAction(action) => {
+                match action {
+                    PowerAction::Lock => {
+                        let _ = std::process::Command::new("loginctl")
+                            .arg("lock-session")
+                            .spawn();
+                    }
+                    PowerAction::Logout => {
+                        if std::process::Command::new("cosmic-osd")
+                            .arg("logout")
+                            .spawn()
+                            .is_err()
+                        {
+                            let _ = std::process::Command::new("loginctl")
+                                .arg("terminate-user")
+                                .arg(std::env::var("USER").unwrap_or_default())
+                                .spawn();
+                        }
+                    }
+                    PowerAction::Suspend => {
+                        let _ = std::process::Command::new("systemctl")
+                            .arg("suspend")
+                            .spawn();
+                    }
+                    PowerAction::Restart => {
+                        if std::process::Command::new("cosmic-osd")
+                            .arg("restart")
+                            .spawn()
+                            .is_err()
+                        {
+                            let _ = std::process::Command::new("systemctl")
+                                .arg("reboot")
+                                .spawn();
+                        }
+                    }
+                    PowerAction::Shutdown => {
+                        if std::process::Command::new("cosmic-osd")
+                            .arg("shutdown")
+                            .spawn()
+                            .is_err()
+                        {
+                            let _ = std::process::Command::new("systemctl")
+                                .arg("poweroff")
+                                .spawn();
+                        }
+                    }
+                }
+                if let Some(p) = self.popup.take() {
+                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))));
+                }
+                Task::none()
+            }
+        }
+    }
+
+    fn on_close_requested(&self, id: Id) -> Option<Message> {
+        Some(Message::PopupClosed(id))
+    }
+
+    fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
+        use cosmic::iced::event;
+        use cosmic::iced::keyboard;
+        use cosmic::iced::window;
+
+        let mut subs = Vec::new();
+
+        // Track window size changes for responsive layout in windowed mode.
+        subs.push(event::listen_with(|event, _status, _window_id| match event {
+            cosmic::iced::Event::Window(window::Event::Resized(size)) => {
+                Some(Message::WindowResized(size))
+            }
+            _ => None,
+        }));
+
+        // Keyboard shortcuts — only when the popup is open.
+        if self.popup.is_some() {
+            subs.push(listen_raw(|event, _status, _id| match event {
+                cosmic::iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(key), ..
+                }) => match key {
+                    Named::Escape => Some(Message::ClosePopup),
+                    Named::ArrowDown => Some(Message::SelectNext),
+                    Named::ArrowUp => Some(Message::SelectPrevious),
+                    Named::ArrowRight => Some(Message::SelectNext),
+                    Named::ArrowLeft => Some(Message::SelectPrevious),
+                    Named::Enter => Some(Message::LaunchSelected),
+                    _ => None,
+                },
+                _ => None,
+            }));
+        }
+
+        cosmic::iced::Subscription::batch(subs)
+    }
+
+    fn style(&self) -> Option<cosmic::iced::theme::Style> {
+        Some(cosmic::applet::style())
+    }
+
+    fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
+        if !self.is_window_mode { return Vec::new(); }
+        let sidebar_toggle: Element<'_, Message> = nav_bar_toggle()
+            .on_toggle(Message::ToggleSidebar)
+            .active(!self.sidebar_collapsed)
+            .into();
+        let search_btn: Element<'_, Message> = cosmic::widget::button::custom(
+            cosmic::widget::icon::from_name("system-search-symbolic").symbolic(true).size(18).icon(),
+        )
+        .on_press(Message::ToggleSearch)
+        .class(if self.search_active { theme::Button::Suggested } else { theme::Button::HeaderBar })
+        .into();
+        vec![sidebar_toggle, search_btn]
+    }
+
+    fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
+        if !self.is_window_mode { return Vec::new(); }
+        let config_btn: Element<'_, Message> = cosmic::widget::button::custom(
+            cosmic::widget::icon::from_name("emblem-system-symbolic").symbolic(true).size(18).icon(),
+        )
+        .on_press(Message::ToggleSettings)
+        .class(if self.show_settings { theme::Button::Suggested } else { theme::Button::HeaderBar })
+        .into();
+        vec![config_btn]
+    }
+}
+
+impl Applet {
+
+    fn build_menu_view(&self, is_popup: bool) -> Element<'_, Message> {
         let cosmic_theme = theme::active();
         let Spacing { space_xxs, space_xs, space_s, space_m, .. } = cosmic_theme.cosmic().spacing;
-        let icon_size = self.config.icon_size;
         let menu_width = self.config.max_width();
         let menu_height = self.config.max_height();
         // Bottom bar height: button content (~21px) + button padding (2×space_xxs)
@@ -289,40 +827,7 @@ impl Application for Applet {
         .class(if self.show_settings { theme::Button::Suggested } else { theme::Button::AppletMenu })
         .into();
 
-        let is_window = self.window_id == Some(_id);
-
-        // Window control buttons (minimize, maximize, close)
-        let wc_minimize: Element<'_, Message> = cosmic::widget::button::custom(
-            cosmic::widget::icon::from_name("window-minimize-symbolic")
-                .symbolic(true).size(16).icon(),
-        )
-        .on_press(if is_window { Message::WindowMinimize } else { Message::ClosePopup })
-        .class(theme::Button::HeaderBar)
-        .padding(8)
-        .into();
-
-        let wc_maximize: Element<'_, Message> = cosmic::widget::button::custom(
-            cosmic::widget::icon::from_name(
-                if is_window && self.window_maximized {
-                    "window-restore-symbolic"
-                } else {
-                    "window-maximize-symbolic"
-                }
-            ).symbolic(true).size(16).icon(),
-        )
-        .on_press(if is_window { Message::WindowToggleMaximize } else { Message::ToggleFullWindow })
-        .class(theme::Button::HeaderBar)
-        .padding(8)
-        .into();
-
-        let wc_close: Element<'_, Message> = cosmic::widget::button::custom(
-            cosmic::widget::icon::from_name("window-close-symbolic")
-                .symbolic(true).size(16).icon(),
-        )
-        .on_press(if is_window { Message::ToggleFullWindow } else { Message::ClosePopup })
-        .class(theme::Button::HeaderBar)
-        .padding(8)
-        .into();
+        let _is_window = !is_popup;
 
         let top_bar = container(
             row![
@@ -330,9 +835,6 @@ impl Application for Applet {
                 search_toggle_btn,
                 Space::new().width(Length::Fill),
                 config_btn,
-                wc_minimize,
-                wc_maximize,
-                wc_close,
             ]
             .align_y(Alignment::Center)
             .spacing(space_s),
@@ -367,10 +869,8 @@ impl Application for Applet {
         // ── App area ──
         // Precompute favourite/pinned lookups once per view (O(n) instead of
         // O(apps × favourites) per cell).
-        let fav_set: std::collections::HashSet<&str> =
-            self.config.favourites.iter().map(String::as_str).collect();
-        let pinned_set: std::collections::HashSet<&str> =
-            self.pinned_apps.iter().map(String::as_str).collect();
+        let fav_set = self.cached_fav_ids.borrow();
+        let pinned_set = self.cached_pinned_ids.borrow();
 
         // In Hybrid mode, use grid for Favourites/Recents categories, list otherwise.
         let use_grid = self.config.layout_mode == config::LayoutMode::Grid
@@ -378,11 +878,7 @@ impl Application for Applet {
                 && matches!(self.selected_category.as_ref(),
                     Some(cat) if cat.key == "favourites" || cat.key == "recents"));
         // Hybrid grid uses a smaller icon size for compact display.
-        let effective_icon_size: f32 = if self.config.layout_mode == config::LayoutMode::Hybrid {
-            32.0
-        } else {
-            icon_size
-        };
+        let effective_icon_size: f32 = LIST_ICON_SIZE as f32;
 
         let app_area: Element<'_, Message> = if self.available_applications.is_empty() {
             container(cosmic::widget::text::body("No applications found."))
@@ -420,7 +916,7 @@ impl Application for Applet {
                 let mut buttons: Vec<Element<'_, Message>> = (start..end)
                     .map(|index| {
                         let app = &self.available_applications[index];
-                        let icon = app_icon(app, effective_icon_size);
+                        let icon = self.cached_icon(app, effective_icon_size);
                         let name = truncate_name(&app.name, 32);
                         let is_selected = self.selected_index == Some(index);
                         let is_fav = fav_set.contains(app.id.as_str());
@@ -462,37 +958,23 @@ impl Application for Applet {
                             .width(Length::Fill)
                             .height(Length::Fixed(cell_height));
 
-                        // Inline context actions on right-click instead of
-                        // slow Wayland context_menu popups.
-                        let is_context_target = self.context_menu_target == Some(index);
-                        let cell: Element<'_, Message> = if is_context_target {
-                            let is_pinned = pinned_set.contains(app.id.as_str());
-                            let fav_label = if is_fav { "★ Unfav" } else { "☆ Fav" };
-                            let pin_label = if is_pinned { "📌 Unpin" } else { "📌 Pin" };
-                            column![
-                                mouse_area(btn)
-                                    .on_press(Message::LaunchApp(index))
-                                    .on_right_press(Message::AppContextMenu(index)),
-                                row![
-                                    cosmic::widget::button::standard(fav_label)
-                                        .on_press(Message::ToggleFavourite(index))
-                                        .width(Length::Fill),
-                                    cosmic::widget::button::standard(pin_label)
-                                        .on_press(if is_pinned {
-                                            Message::UnpinFromTray(index)
-                                        } else {
-                                            Message::PinToTray(index)
-                                        })
-                                        .width(Length::Fill),
-                                ].spacing(space_xxs),
-                            ].spacing(space_xxs).into()
+                        // Right-click context menu — inline overlay, no Wayland popup.
+                        let is_pinned = pinned_set.contains(app.id.as_str());
+                        let fav_label = if is_fav { "Unfavourite" } else { "Favourite" };
+                        let pin_label = if is_pinned { "Unpin from Tray" } else { "Pin to Tray" };
+                        let pin_action = if is_pinned {
+                            AppContextAction::UnpinFromTray(index)
                         } else {
-                            mouse_area(btn)
-                                .on_press(Message::LaunchApp(index))
-                                .on_right_press(Message::AppContextMenu(index))
-                                .into()
+                            AppContextAction::PinToTray(index)
                         };
-                        cell
+                        let ctx_menu = menu::items(
+                            &EMPTY_MENU_KEYBINDS,
+                            vec![
+                                menu::Item::Button(fav_label, None, AppContextAction::ToggleFav(index)),
+                                menu::Item::Button(pin_label, None, pin_action),
+                            ],
+                        );
+                        cosmic::widget::context_menu(btn, Some(ctx_menu)).into()
                     })
                     .collect();
 
@@ -564,34 +1046,47 @@ impl Application for Applet {
                 column_spacing,
             } = list_grid_metrics(space_xxs, space_s, list_width);
 
-            let mut app_grid = grid();
-            let mut col = 0;
+            let mut rows: Vec<Element<'_, Message>> = Vec::new();
+            let mut row_children: Vec<Element<'_, Message>> = Vec::new();
             for (index, app) in self.available_applications.iter().enumerate() {
-                if col >= cols {
-                    app_grid = app_grid.insert_row();
-                    col = 0;
-                }
-                app_grid = app_grid.push(app_list_card(
+                let is_fav = fav_set.contains(app.id.as_str());
+                let is_pinned = pinned_set.contains(app.id.as_str());
+                let fav_label = if is_fav { "Unfavourite" } else { "Favourite" };
+                let pin_label = if is_pinned { "Unpin from Tray" } else { "Pin to Tray" };
+                let pin_action = if is_pinned {
+                    AppContextAction::UnpinFromTray(index)
+                } else {
+                    AppContextAction::PinToTray(index)
+                };
+                let ctx_menu = menu::items(
+                    &EMPTY_MENU_KEYBINDS,
+                    vec![
+                        menu::Item::Button(fav_label, None, AppContextAction::ToggleFav(index)),
+                        menu::Item::Button(pin_label, None, pin_action),
+                    ],
+                );
+                row_children.push(app_list_card(
                     app,
                     space_xxs,
                     space_s,
                     item_width,
                     index,
-                    fav_set.contains(app.id.as_str()),
-                    pinned_set.contains(app.id.as_str()),
+                    is_fav,
+                    is_pinned,
+                    ctx_menu,
                 ));
-                col += 1;
+                if row_children.len() >= cols {
+                    rows.push(row(row_children).spacing(column_spacing).into());
+                    row_children = Vec::new();
+                }
+            }
+            if !row_children.is_empty() {
+                rows.push(row(row_children).spacing(column_spacing).into());
             }
 
             container(
                 scrollable(
-                    container(
-                        app_grid
-                            .column_spacing(column_spacing)
-                            .row_spacing(column_spacing)
-                            .width(Length::Fill),
-                    )
-                    .width(Length::Fill),
+                    column(rows).spacing(column_spacing).width(Length::Fill),
                 )
                 .id((*SCROLLABLE_ID).clone())
                 .height(Length::Fill)
@@ -698,87 +1193,54 @@ impl Application for Applet {
                     .into()
                 }).collect();
 
-                // ── Panel icon picker ──
-                let icon_presets: &[(&str, &str)] = &[
-                    // ── COSMIC & Generic ──
+                // ── Panel icon dropdown ──
+                let icon_options: &[(&str, &str)] = &[
                     ("com.system76.CosmicAppLibrary", "COSMIC"),
                     ("application-menu-symbolic", "App Menu"),
                     ("open-menu-symbolic", "Menu"),
                     ("start-here-symbolic", "Start"),
                     ("distributor-logo", "Linux"),
                     ("applications-all-symbolic", "All Apps"),
-                    // ── Desktop Environments ──
-                    ("kde", "KDE"),
-                    ("plasma", "Plasma"),
-                    ("kmenu", "K Menu"),
+                    ("kde", "KDE"), ("plasma", "Plasma"), ("kmenu", "K Menu"),
                     ("gnome-main-menu", "GNOME"),
-                    // ── Distro Logos ──
                     ("distributor-logo-pop-os", "Pop!_OS"),
-                    ("start-here-ubuntu", "Ubuntu"),
-                    ("start-here-kubuntu", "Kubuntu"),
-                    ("start-here-lubuntu", "Lubuntu"),
-                    ("start-here-xubuntu", "Xubuntu"),
-                    ("start-here-ubuntu-mate", "Ubuntu MATE"),
-                    ("start-here-ubuntu-gnome", "Ubuntu GNOME"),
-                    ("start-here-fedora", "Fedora"),
-                    ("distributor-logo-debian", "Debian"),
-                    ("distributor-logo-archlinux", "Arch"),
-                    ("distributor-logo-manjaro", "Manjaro"),
-                    ("distributor-logo-opensuse", "openSUSE"),
-                    ("distributor-logo-solus", "Solus"),
-                    ("distributor-logo-elementary", "elementary"),
-                    ("distributor-logo-linux-mint", "Mint"),
-                    ("distributor-logo-slackware", "Slackware"),
-                    ("distributor-logo-mageia", "Mageia"),
-                    // ── Category icons ──
-                    ("applications-system-symbolic", "System"),
-                    ("applications-engineering-symbolic", "Dev"),
-                    ("applications-games-symbolic", "Games"),
-                    ("applications-graphics-symbolic", "Graphics"),
-                    ("applications-multimedia-symbolic", "Media"),
-                    ("applications-office-symbolic", "Office"),
-                    ("applications-science-symbolic", "Science"),
-                    ("applications-utilities-symbolic", "Utils"),
-                    // ── Actions ──
-                    ("computer-symbolic", "Computer"),
-                    ("system-run-symbolic", "Run"),
-                    ("system-search-symbolic", "Search"),
-                    ("preferences-system-symbolic", "Settings"),
+                    ("start-here-ubuntu", "Ubuntu"), ("start-here-kubuntu", "Kubuntu"),
+                    ("start-here-lubuntu", "Lubuntu"), ("start-here-xubuntu", "Xubuntu"),
+                    ("start-here-ubuntu-mate", "Ubuntu MATE"), ("start-here-ubuntu-gnome", "Ubuntu GNOME"),
+                    ("start-here-fedora", "Fedora"), ("distributor-logo-debian", "Debian"),
+                    ("distributor-logo-archlinux", "Arch"), ("distributor-logo-manjaro", "Manjaro"),
+                    ("distributor-logo-opensuse", "openSUSE"), ("distributor-logo-solus", "Solus"),
+                    ("distributor-logo-elementary", "elementary"), ("distributor-logo-linux-mint", "Mint"),
+                    ("distributor-logo-slackware", "Slackware"), ("distributor-logo-mageia", "Mageia"),
+                    ("applications-system-symbolic", "System"), ("applications-engineering-symbolic", "Dev"),
+                    ("applications-games-symbolic", "Games"), ("applications-graphics-symbolic", "Graphics"),
+                    ("applications-multimedia-symbolic", "Media"), ("applications-office-symbolic", "Office"),
+                    ("applications-science-symbolic", "Science"), ("applications-utilities-symbolic", "Utils"),
+                    ("computer-symbolic", "Computer"), ("system-run-symbolic", "Run"),
+                    ("system-search-symbolic", "Search"), ("preferences-system-symbolic", "Settings"),
                     ("emblem-system-symbolic", "System"),
                 ];
-
-                // Build icon grid: 3 columns. Build rows by index to avoid Element cloning.
-                let col_count = 3;
-                let row_count = (icon_presets.len() + col_count - 1) / col_count;
-                let icon_rows: Vec<Element<'_, Message>> = (0..row_count)
-                    .map(|row_idx| {
-                        let start = row_idx * col_count;
-                        let end = ((row_idx + 1) * col_count).min(icon_presets.len());
-                        let btns: Vec<Element<'_, Message>> = (start..end)
-                            .map(|i| {
-                                let (icon_name, label) = icon_presets[i];
-                                let is_active = self.config.panel_icon == icon_name
-                                    || (self.config.panel_icon.is_empty() && icon_name == "com.system76.CosmicAppLibrary");
-                                let icon = cosmic::widget::icon::from_name(icon_name)
-                                    .symbolic(false).prefer_svg(true).size(36).icon();
-                                cosmic::widget::button::custom(
-                                    column![
-                                        icon,
-                                        cosmic::widget::text::caption(label),
-                                    ]
-                                    .width(Length::Fill)
-                                    .align_x(Alignment::Center)
-                                    .spacing(2),
-                                )
-                                .on_press(Message::SetPanelIcon(icon_name.to_string()))
-                                .class(if is_active { theme::Button::Suggested } else { theme::Button::AppletMenu })
-                                .width(Length::Fill)
-                                .into()
-                            })
-                            .collect();
-                        row(btns).spacing(space_xxs).width(Length::Fill).align_y(Alignment::Center).into()
-                    })
-                    .collect();
+                let current_icon = if self.config.panel_icon.is_empty() {
+                    "com.system76.CosmicAppLibrary"
+                } else {
+                    &self.config.panel_icon
+                };
+                let labels: Vec<String> = icon_options.iter().map(|(_, l)| l.to_string()).collect();
+                let icons: Vec<cosmic::widget::icon::Handle> = icon_options.iter().map(|(name, _)| {
+                    cosmic::widget::icon::from_name(*name).symbolic(false).prefer_svg(true).size(24).handle()
+                }).collect();
+                let selected_idx = icon_options.iter().position(|(name, _)| *name == current_icon);
+                let picker = dropdown(
+                    labels,
+                    selected_idx,
+                    move |idx: usize| {
+                        let icon_name = icon_options[idx].0.to_string();
+                        Message::SetPanelIcon(icon_name)
+                    },
+                )
+                .icons(icons.into())
+                .width(Length::Fill)
+                .padding([space_xxs, space_s]);
 
 
                 column![
@@ -791,10 +1253,36 @@ impl Application for Applet {
                     cosmic::widget::text::heading("Menu Size"),
                     Space::new().height(space_xxs),
                     column(size_btns).spacing(space_xxs),
+                    // Custom size inputs (shown when Custom preset is active)
+                    if self.config.size_preset == config::SizePreset::Custom {
+                        let width_input = cosmic::widget::text_input("Width (px)…", &self.custom_width_input)
+                            .on_input(Message::SetCustomWidth)
+                            .width(Length::Fixed(100.0))
+                            .padding([space_xxs, space_xxs]);
+                        let height_input = cosmic::widget::text_input("Height (px)…", &self.custom_height_input)
+                            .on_input(Message::SetCustomHeight)
+                            .width(Length::Fixed(100.0))
+                            .padding([space_xxs, space_xxs]);
+                        let apply_btn: Element<'_, Message> = cosmic::widget::button::standard("Apply")
+                            .on_press(Message::ApplyCustomSize)
+                            .into();
+                        let row: Element<'_, Message> = row![
+                            cosmic::widget::text::body("W:"),
+                            width_input,
+                            Space::new().width(Length::Fixed(space_xxs as f32)),
+                            cosmic::widget::text::body("H:"),
+                            height_input,
+                            Space::new().width(Length::Fixed(space_s as f32)),
+                            apply_btn,
+                        ].align_y(Alignment::Center).spacing(space_xxs).into();
+                        Some(row)
+                    } else {
+                        None
+                    },
                     Space::new().height(space_m),
                     cosmic::widget::text::heading("Panel Icon"),
                     Space::new().height(space_xxs),
-                    column(icon_rows).spacing(space_xxs),
+                    picker,
                     Space::new().height(space_xxs),
                     // Symbolic / coloured toggle
                     {
@@ -967,7 +1455,7 @@ impl Application for Applet {
         };
 
         // ── Bottom bar: power actions ──
-        let menu_too_small = menu_height < 600.0;
+        let menu_too_small = menu_height < 600.0 || menu_width <= 600.0;
         let power_buttons: Vec<Element<'_, Message>> = PowerAction::BOTTOM_BAR
             .iter()
             .map(|&action| {
@@ -1080,25 +1568,7 @@ impl Application for Applet {
         // Outer container: fixed size so the Fill column has a definite height
         // to distribute. The column's own padding provides visual spacing from
         // the popup edges.
-        let is_window = self.window_id == Some(_id);
-
-        if is_window {
-            // Window mode: fill the entire window, use a regular container
-            // with the theme's background colour.
-            container(main_col)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(|theme| {
-                    let cosmic = theme.cosmic();
-                    cosmic::iced::widget::container::Style {
-                        background: Some(
-                            cosmic::iced::Color::from(cosmic.background(false).base).into(),
-                        ),
-                        ..Default::default()
-                    }
-                })
-                .into()
-        } else {
+        if is_popup {
             // Popup mode: fixed size inside a popup_container (frosted glass).
             let layout = container(main_col)
                 .width(Length::Fixed(menu_width))
@@ -1115,469 +1585,28 @@ impl Application for Applet {
                         .max_height(menu_height),
                 )
                 .into()
+        } else {
+            // Window mode: fill the entire window, frosted-glass background
+            // matching the panel / title-bar appearance.
+            container(main_col)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding([space_xs, space_xs, 0, space_xs])
+                .style(|theme| {
+                    let cosmic = theme.cosmic();
+                    let bg = cosmic.background(true).base;
+                    cosmic::iced::widget::container::Style {
+                        background: Some(cosmic::iced::Color::from(bg).into()),
+                        text_color: Some(cosmic.background(true).on.into()),
+                        icon_color: Some(cosmic.background(true).on.into()),
+                        ..Default::default()
+                    }
+                })
+                .into()
         }
     }
 
-    fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
-        match message {
-            Message::Surface(a) => {
-                return cosmic::task::message(cosmic::Action::Cosmic(
-                    cosmic::app::Action::Surface(a),
-                ));
-            }
-            Message::TogglePopup => {
-                if let Some(wid) = self.window_id.take() {
-                    // Window is open — close it and return to applet mode
-                    self.window_maximized = false;
-                    return Task::done(cosmic::Action::App(Message::Surface(destroy_window(wid))));
-                }
-                if let Some(p) = self.popup.take() {
-                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))));
-                }
-                self.search_field.clear();
-                self.search_active = false;
-                self.selected_index = None;
-                self.grid_scroll_y = 0.0;
-                self.grid_viewport_h = 0.0;
-                self.sidebar_collapsed = self.config.sidebar_collapsed;
-                // Use cached apps from init — a background refresh task
-                // keeps them up to date without blocking the UI.
-                self.available_applications = self.all_applications.clone();
-                self.rebuild_nav_model();
 
-                // Apply default category from config
-                let default_key = &self.config.default_category;
-                let default_cat = match default_key.as_str() {
-                    "favourites" => {
-                        let mut fav_apps = apps::filter_by_ids(&self.all_applications, &self.config.favourites);
-                        fav_apps.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
-                        self.available_applications = fav_apps;
-                        Some(ApplicationCategory::favourites())
-                    }
-                    "recents" => {
-                        let rec_apps = apps::filter_by_ids(&self.all_applications, &self.config.recents);
-                        self.available_applications = rec_apps;
-                        Some(ApplicationCategory::recents())
-                    }
-                    _ => {
-                        Some(ApplicationCategory::all())
-                    }
-                };
-                self.selected_category = default_cat;
-                // Activate the matching nav entity
-                if let Some(ref cat) = self.selected_category {
-                    let entity = self.nav_model.iter().find(|&entity| {
-                        self.nav_model.data::<ApplicationCategory>(entity)
-                            .map_or(false, |c| c.key == cat.key)
-                    });
-                    if let Some(entity) = entity {
-                        self.nav_model.activate(entity);
-                    }
-                }
-
-                let new_id = Id::unique();
-                self.popup = Some(new_id);
-
-                let popup_width = self.config.max_width() as u32;
-                let popup_height = self.config.max_height() as u32;
-                let anchor = self.core.applet.anchor;
-                let max_width = self.config.max_width();
-                let max_height = self.config.max_height();
-
-                Task::done(cosmic::Action::App(Message::Surface(app_popup::<Applet>(
-                    |_| LiveSettings::default(),
-                    move |state: &mut Applet| {
-                        state.popup = Some(new_id);
-                        let mut popup_settings = state.core.applet.get_popup_settings(
-                            state.core.main_window_id().unwrap(), new_id,
-                            Some((popup_width, popup_height)),
-                            None, None,
-                        );
-                        let (a, g) = match anchor {
-                            PanelAnchor::Top => (Anchor::BottomLeft, Gravity::BottomRight),
-                            PanelAnchor::Bottom => (Anchor::TopLeft, Gravity::TopRight),
-                            PanelAnchor::Left => (Anchor::TopRight, Gravity::BottomRight),
-                            PanelAnchor::Right => (Anchor::TopLeft, Gravity::BottomLeft),
-                        };
-                        popup_settings.positioner.anchor = a;
-                        popup_settings.positioner.gravity = g;
-                        popup_settings.positioner.size = Some((popup_width, popup_height));
-                        popup_settings.positioner.size_limits = Limits::NONE
-                            .min_width(max_width)
-                            .min_height(max_height)
-                            .max_width(max_width)
-                            .max_height(max_height);
-                        popup_settings
-                    },
-                    None,
-                ))))
-            }
-            Message::PopupClosed(id) => {
-                if self.popup == Some(id) { self.popup = None; }
-                if self.window_id == Some(id) { self.window_id = None; }
-                Task::none()
-            }
-            Message::ClosePopup => {
-                if let Some(p) = self.popup.take() { return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p)))); }
-                Task::none()
-            }
-            Message::ToggleFullWindow => {
-                if let Some(wid) = self.window_id.take() {
-                    // Window → popup: close the window first
-                    self.window_maximized = false;
-                    return Task::done(cosmic::Action::App(Message::Surface(destroy_window(wid))));
-                }
-                // Popup → window: close popup (if open) and create a full window
-                let close_popup = if let Some(p) = self.popup.take() {
-                    Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))))
-                } else {
-                    Task::none()
-                };
-                let (new_id, action) = app_window::<Applet>(
-                    |_| LiveSettings::default(),
-                    |_state: &mut Applet| {
-                        cosmic::iced::window::Settings {
-                            size: cosmic::iced::Size::new(1200.0, 800.0),
-                            maximized: true,
-                            resizable: true,
-                            decorations: false,
-                            ..Default::default()
-                        }
-                    },
-                    None,
-                );
-                self.window_id = Some(new_id);
-                self.window_maximized = true;
-                let create_window = Task::done(cosmic::Action::App(Message::Surface(action)));
-                Task::batch([close_popup, create_window])
-            }
-            Message::WindowMinimize => {
-                if let Some(wid) = self.window_id {
-                    return cosmic::command::minimize::<Message>(wid);
-                }
-                Task::none()
-            }
-            Message::WindowToggleMaximize => {
-                if let Some(wid) = self.window_id {
-                    self.window_maximized = !self.window_maximized;
-                    return cosmic::command::toggle_maximize::<Message>(wid);
-                }
-                Task::none()
-            }
-            Message::SearchInput(input) => {
-                // Guard: skip if input hasn't changed.
-                if input == self.search_field {
-                    return Task::none();
-                }
-                self.search_field = input.clone();
-                self.selected_index = None;
-                self.grid_scroll_y = 0.0;
-                self.available_applications = if input.is_empty() {
-                    self.all_applications.clone()
-                } else {
-                    apps::filter_apps(&self.all_applications, &input)
-                };
-                // Keep "All Applications" selected while searching
-                self.selected_category = Some(ApplicationCategory::all());
-                let all_entity = self.nav_model.iter().find(|&entity| {
-                    self.nav_model.data::<ApplicationCategory>(entity)
-                        .map_or(false, |cat| cat.key == "all")
-                });
-                if let Some(entity) = all_entity {
-                    self.nav_model.activate(entity);
-                }
-                self.reset_grid_scroll()
-            }
-            Message::SearchCleared => {
-                self.search_field.clear();
-                self.search_active = false;
-                self.selected_index = None;
-                self.available_applications = self.all_applications.clone();
-                self.selected_category = Some(ApplicationCategory::all());
-                // Find and activate the "All" entity
-                let all_entity = self.nav_model.iter().find(|&entity| {
-                    self.nav_model.data::<ApplicationCategory>(entity)
-                        .map_or(false, |cat| cat.key == "all")
-                });
-                if let Some(entity) = all_entity {
-                    self.nav_model.activate(entity);
-                }
-                self.reset_grid_scroll()
-            }
-            Message::ToggleSearch => {
-                self.search_active = !self.search_active;
-                if self.search_active {
-                    self.search_field.clear();
-                    self.selected_index = None;
-                    self.available_applications = self.all_applications.clone();
-                    // Keep "All Applications" selected in sidebar
-                    self.selected_category = Some(ApplicationCategory::all());
-                    let all_entity = self.nav_model.iter().find(|&entity| {
-                        self.nav_model.data::<ApplicationCategory>(entity)
-                            .map_or(false, |cat| cat.key == "all")
-                    });
-                    if let Some(entity) = all_entity {
-                        self.nav_model.activate(entity);
-                    }
-                    let focus_id = (*SEARCH_ID).clone();
-                    let focus = cosmic::widget::text_input::focus(focus_id);
-                    let reset = self.reset_grid_scroll();
-                    return Task::batch([focus, reset]);
-                } else {
-                    // Closing search — restore "All Applications"
-                    self.search_field.clear();
-                    self.selected_index = None;
-                    self.available_applications = self.all_applications.clone();
-                    self.selected_category = Some(ApplicationCategory::all());
-                    let all_entity = self.nav_model.iter().find(|&entity| {
-                        self.nav_model.data::<ApplicationCategory>(entity)
-                            .map_or(false, |cat| cat.key == "all")
-                    });
-                    if let Some(entity) = all_entity {
-                        self.nav_model.activate(entity);
-                    }
-                }
-                self.reset_grid_scroll()
-            }
-            Message::CategoryActivated(entity) => {
-                self.search_field.clear();
-                self.search_active = false;
-                self.selected_index = None;
-                self.nav_model.activate(entity);
-                if let Some(cat) = self.nav_model.data::<ApplicationCategory>(entity) {
-                    let cat = cat.clone();
-                    self.selected_category = Some(cat.clone());
-                    self.available_applications = match cat.key.as_str() {
-                        "favourites" => {
-                            let mut favs = apps::filter_by_ids(&self.all_applications, &self.config.favourites);
-                            favs.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
-                            favs
-                        }
-                        "recents" => apps::filter_by_ids(&self.all_applications, &self.config.recents),
-                        _ => apps::filter_apps_by_category(&self.all_applications, &cat),
-                    };
-                }
-                self.reset_grid_scroll()
-            }
-            Message::GridScrolled(y, viewport_h) => {
-                self.grid_scroll_y = y;
-                self.grid_viewport_h = viewport_h;
-                self.context_menu_target = None;
-                Task::none()
-            }
-            Message::AppContextMenu(index) => {
-                if self.context_menu_target == Some(index) {
-                    self.context_menu_target = None;
-                } else {
-                    self.context_menu_target = Some(index);
-                }
-                Task::none()
-            }
-            Message::LaunchApp(index) => {
-                if let Some(app) = self.available_applications.get(index).cloned() {
-                    return self.launch_application(app);
-                }
-                Task::none()
-            }
-            Message::SelectNext => {
-                if self.available_applications.is_empty() { return Task::none(); }
-                match self.selected_index {
-                    None => self.selected_index = Some(0),
-                    Some(i) if i + 1 < self.available_applications.len() => {
-                        self.selected_index = Some(i + 1);
-                    }
-                    _ => {}
-                }
-                Task::none()
-            }
-            Message::SelectPrevious => {
-                match self.selected_index {
-                    Some(0) | None => self.selected_index = None,
-                    Some(i) => self.selected_index = Some(i - 1),
-                }
-                Task::none()
-            }
-            Message::LaunchSelected => {
-                if let Some(i) = self.selected_index {
-                    if let Some(app) = self.available_applications.get(i).cloned() {
-                        return self.launch_application(app);
-                    }
-                }
-                Task::none()
-            }
-            Message::ToggleLayout(mode) => {
-                self.config.layout_mode = mode;
-                self.config.save();
-                self.show_settings = false;
-                Task::none()
-            }
-            Message::ToggleSidebar => {
-                self.sidebar_collapsed = !self.sidebar_collapsed;
-                // The category-title row appears/disappears above the app grid,
-                // changing the grid viewport height — re-sync the scroll state.
-                self.reset_grid_scroll()
-            }
-            Message::ToggleSettings => {
-                self.show_settings = !self.show_settings;
-                Task::none()
-            }
-            Message::SetSizePreset(preset) => {
-                self.config.size_preset = preset;
-                self.config.custom_width = 0.0;
-                self.config.custom_height = 0.0;
-                self.config.save();
-                Task::none()
-            }
-            Message::SetPanelIcon(icon) => {
-                self.config.panel_icon = icon;
-                self.config.save();
-                Task::none()
-            }
-            Message::TogglePanelIconSymbolic => {
-                self.config.panel_icon_symbolic = !self.config.panel_icon_symbolic;
-                self.config.save();
-                Task::none()
-            }
-            Message::ToggleShowFavourites => {
-                self.config.show_favourites = !self.config.show_favourites;
-                self.config.save();
-                self.rebuild_nav_model();
-                Task::none()
-            }
-            Message::ToggleShowRecents => {
-                self.config.show_recents = !self.config.show_recents;
-                self.config.save();
-                self.rebuild_nav_model();
-                Task::none()
-            }
-            Message::ToggleSidebarDefault => {
-                self.config.sidebar_collapsed = !self.config.sidebar_collapsed;
-                self.config.save();
-                Task::none()
-            }
-            Message::SetDefaultCategory(cat) => {
-                self.config.default_category = cat;
-                self.config.save();
-                Task::none()
-            }
-            Message::ToggleFavourite(index) => {
-                if let Some(app) = self.available_applications.get(index) {
-                    let app_id = app.id.clone();
-                    self.config.toggle_favourite(&app_id);
-                    self.config.save();
-                    // Rebuild nav to show/hide Favourites entry
-                    self.rebuild_nav_model();
-                    // If viewing favourites and unfavourited, refresh list
-                    if let Some(ref cat) = self.selected_category {
-                        if cat.key == "favourites" {
-                            let mut favs = apps::filter_by_ids(&self.all_applications, &self.config.favourites);
-                            favs.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
-                            self.available_applications = favs;
-                        }
-                    }
-                }
-                Task::none()
-            }
-            Message::PinToTray(index) => {
-                if let Some(app) = self.available_applications.get(index) {
-                    let app_id = app.id.clone();
-                    self.pinned_apps = self.pin_app_to_dock(&app_id);
-                }
-                Task::none()
-            }
-            Message::UnpinFromTray(index) => {
-                if let Some(app) = self.available_applications.get(index) {
-                    let app_id = app.id.clone();
-                    self.pinned_apps = self.unpin_app_from_dock(&app_id);
-                }
-                Task::none()
-            }
-            Message::PowerAction(action) => {
-                match action {
-                    PowerAction::Lock => {
-                        let _ = std::process::Command::new("loginctl")
-                            .arg("lock-session")
-                            .spawn();
-                    }
-                    PowerAction::Logout => {
-                        if std::process::Command::new("cosmic-osd")
-                            .arg("logout")
-                            .spawn()
-                            .is_err()
-                        {
-                            let _ = std::process::Command::new("loginctl")
-                                .arg("terminate-user")
-                                .arg(std::env::var("USER").unwrap_or_default())
-                                .spawn();
-                        }
-                    }
-                    PowerAction::Suspend => {
-                        let _ = std::process::Command::new("systemctl")
-                            .arg("suspend")
-                            .spawn();
-                    }
-                    PowerAction::Restart => {
-                        if std::process::Command::new("cosmic-osd")
-                            .arg("restart")
-                            .spawn()
-                            .is_err()
-                        {
-                            let _ = std::process::Command::new("systemctl")
-                                .arg("reboot")
-                                .spawn();
-                        }
-                    }
-                    PowerAction::Shutdown => {
-                        if std::process::Command::new("cosmic-osd")
-                            .arg("shutdown")
-                            .spawn()
-                            .is_err()
-                        {
-                            let _ = std::process::Command::new("systemctl")
-                                .arg("poweroff")
-                                .spawn();
-                        }
-                    }
-                }
-                if let Some(p) = self.popup.take() {
-                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))));
-                }
-                Task::none()
-            }
-        }
-    }
-
-    fn on_close_requested(&self, id: Id) -> Option<Message> {
-        Some(Message::PopupClosed(id))
-    }
-
-    fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
-        // Only subscribe to keyboard shortcuts when the popup is open.
-        if self.popup.is_none() {
-            return cosmic::iced::Subscription::none();
-        }
-        listen_raw(|event, _status, _id| match event {
-            cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
-                key: cosmic::iced::keyboard::Key::Named(key), ..
-            }) => match key {
-                Named::Escape => Some(Message::ClosePopup),
-                Named::ArrowDown => Some(Message::SelectNext),
-                Named::ArrowUp => Some(Message::SelectPrevious),
-                Named::ArrowRight => Some(Message::SelectNext),
-                Named::ArrowLeft => Some(Message::SelectPrevious),
-                Named::Enter => Some(Message::LaunchSelected),
-                _ => None,
-            },
-            _ => None,
-        })
-    }
-
-    fn style(&self) -> Option<cosmic::iced::theme::Style> {
-        Some(cosmic::applet::style())
-    }
-}
-
-impl Applet {
     /// Reset the app-grid scroll position and snap the scrollable back to the
     /// top, keeping the tracked offset in sync with the widget's internal one.
     /// The viewport height is also forgotten so the safe fallback (menu height)
@@ -1595,11 +1624,26 @@ impl Applet {
         )
     }
 
+    fn cached_icon(&self, app: &ApplicationEntry, size: f32) -> cosmic::widget::icon::Icon {
+        let size_u16 = size as u16;
+        let icon_name = app.icon.clone().unwrap_or_default();
+        let key = (icon_name, size_u16);
+        {
+            let cache = self.icon_cache.borrow();
+            if let Some(icon) = cache.get(&key) {
+                return icon.clone();
+            }
+        }
+        let icon = app_icon(app, size);
+        self.icon_cache.borrow_mut().insert(key, icon.clone());
+        icon
+    }
+
     fn rebuild_nav_model(&mut self) {
         self.nav_model.clear();
 
         // "All Applications" entry
-        let all_icon = cosmic::widget::icon::from_name("applications-all-symbolic")
+        let all_icon = cosmic::widget::icon::from_name("applications-system-symbolic")
             .symbolic(true).size(16).icon();
         self.nav_model.insert()
             .text("All Applications")
@@ -1745,6 +1789,7 @@ fn app_list_card<'a>(
     index: usize,
     is_favourite: bool,
     _is_pinned: bool,
+    ctx_menu: Vec<menu::Tree<Message>>,
 ) -> Element<'a, Message> {
     let icon = app_icon(app, LIST_ICON_SIZE as f32);
     let summary = app
@@ -1787,10 +1832,9 @@ fn app_list_card<'a>(
         .padding([space_xxs, space_s])
         .class(theme::Container::Card),
     )
-    .on_press(Message::LaunchApp(index))
-    .on_right_press(Message::AppContextMenu(index));
+    .on_press(Message::LaunchApp(index));
 
-    card.into()
+    cosmic::widget::context_menu(card, Some(ctx_menu)).into()
 }
 
 // ── Icon helpers ──
@@ -1838,5 +1882,11 @@ fn main() -> cosmic::iced::Result {
         .filter_or("MY_LOG_LEVEL", "warn")
         .write_style_or("MY_LOG_STYLE", "always");
     env_logger::init_from_env(env);
-    cosmic::applet::run::<Applet>(())
+    let args: Vec<String> = std::env::args().collect();
+    let is_window = args.iter().any(|a| a == "--window");
+    if is_window {
+        cosmic::app::run::<Applet>(cosmic::app::Settings::default(), ())
+    } else {
+        cosmic::applet::run::<Applet>(())
+    }
 }
