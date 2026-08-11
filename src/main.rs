@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 const APP_ID: &str = "com.github.cosmic-kde-launcher";
-const LIST_ICON_SIZE: u16 = 48;
+const LIST_ICON_SIZE: u16 = 64;
 const SIDEBAR_WIDTH: f32 = 240.0;
 const CONTEXT_PANEL_WIDTH: f32 = 200.0;
 static SEARCH_ID: LazyLock<cosmic::widget::Id> =
@@ -843,7 +843,6 @@ impl Applet {
         // Precompute favourite/pinned lookups once per view (O(n) instead of
         // O(apps × favourites) per cell).
         let fav_set = self.cached_fav_ids.borrow();
-        let pinned_set = self.cached_pinned_ids.borrow();
 
         // In Hybrid mode, use grid for Favourites/Recents categories, list otherwise.
         let use_grid = self.config.layout_mode == config::LayoutMode::Grid
@@ -1015,7 +1014,7 @@ impl Applet {
 
             let apps = &self.available_applications;
             let total_rows = if apps.is_empty() || cols == 0 { 0 } else { (apps.len() + cols - 1) / cols };
-            let card_height = LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0 + 40.0;
+            let card_height = LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0;
             let row_stride = card_height + column_spacing as f32;
             let content_h = if total_rows == 0 { 0.0 } else { total_rows as f32 * row_stride - column_spacing as f32 };
 
@@ -1025,6 +1024,11 @@ impl Applet {
             let first_row = if scroll <= row_stride { 0usize } else { ((scroll / row_stride) as usize).saturating_sub(1) };
             let last_row = ((scroll + viewport_h) / row_stride).ceil() as usize;
             let last_row = last_row.min(total_rows.saturating_sub(1)).saturating_add(1).min(total_rows.saturating_sub(1));
+
+            // Pre-compute text column width once per view (same for all cards).
+            let text_width = item_width.saturating_sub(
+                LIST_ICON_SIZE as usize + space_s as usize * 2 + space_s as usize
+            ) as f32;
 
             let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(last_row.saturating_sub(first_row) + 3);
             if first_row > 0 {
@@ -1038,9 +1042,8 @@ impl Applet {
                 for i in start..end {
                     let app = &apps[i];
                     let is_fav = fav_set.contains(app.id.as_str());
-                    let is_pinned = pinned_set.contains(app.id.as_str());
                     let icon = self.cached_icon(app, LIST_ICON_SIZE as f32);
-                    row_children.push(app_list_card(app, icon, space_xxs, space_s, item_width, i, is_fav, is_pinned));
+                    row_children.push(app_list_card(app, icon, space_xxs, space_s, text_width, item_width, i, is_fav));
                 }
                 let missing = cols.saturating_sub(row_children.len());
                 for _ in 0..missing {
@@ -1893,7 +1896,7 @@ impl GridMetrics {
 }
 
 fn list_grid_metrics(space_xxs: u16, space_s: u16, width: usize) -> GridMetrics {
-    GridMetrics::new(width, 240 + 2 * space_s as usize, space_xxs)
+    GridMetrics::new(width, 320 + 2 * space_s as usize, space_xxs)
 }
 
 fn app_list_card<'a>(
@@ -1901,10 +1904,10 @@ fn app_list_card<'a>(
     icon: cosmic::widget::icon::Icon,
     space_xxs: u16,
     space_s: u16,
+    text_width: f32,
     width: usize,
     index: usize,
     is_favourite: bool,
-    _is_pinned: bool,
 ) -> Element<'a, Message> {
     let summary = app
         .description
@@ -1917,39 +1920,49 @@ fn app_list_card<'a>(
             .symbolic(true).size(14).icon();
         row![
             cosmic::widget::text::body(&app.name)
+                .height(Length::Fixed(20.0))
+                .width(Length::Fixed(text_width.max(40.0)))
                 .wrapping(cosmic::iced::widget::text::Wrapping::Word),
             Space::new().width(Length::Fixed(space_xxs as f32)),
             star,
         ].align_y(Alignment::Center).into()
     } else {
         cosmic::widget::text::body(&app.name)
+            .height(Length::Fixed(20.0))
+            .width(Length::Fixed(text_width.max(40.0)))
             .wrapping(cosmic::iced::widget::text::Wrapping::Word)
             .into()
     };
 
-    let card = mouse_area(
+    // Height driven by icon (LIST_ICON_SIZE) + vertical padding,
+    // matching cosmic-store package_card_view pattern.
+    let card_height = LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0;
+
+    mouse_area(
         container(
             row![
                 icon,
                 column![
                     name_row,
                     cosmic::widget::text::caption(summary)
+                        .height(Length::Fixed(28.0))
+                        .width(Length::Fixed(text_width.max(40.0)))
                         .wrapping(cosmic::iced::widget::text::Wrapping::Word),
                 ]
                 .spacing(2),
             ]
             .align_y(Alignment::Center)
-            .spacing(space_xxs),
+            .spacing(space_s),
         )
         .align_y(Alignment::Center)
         .width(Length::Fixed(width as f32))
-        .height(Length::Fixed(LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0 + 40.0))
-        .padding([space_xxs, space_s]),
+        .height(Length::Fixed(card_height))
+        .padding([space_xxs, space_s])
+        .class(theme::Container::Card),
     )
     .on_press(Message::LaunchApp(index))
-    .on_right_press(Message::AppContextMenu(index));
-
-    card.into()
+    .on_right_press(Message::AppContextMenu(index))
+    .into()
 }
 
 // ── Icon helpers ──
