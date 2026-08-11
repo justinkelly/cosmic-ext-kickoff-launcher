@@ -78,13 +78,21 @@ impl<'de> Deserialize<'de> for LayoutMode {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SizePreset {
+    /// Small landscape 600×480.
     Small,
+    /// Medium landscape 800×640.
     Medium,
-    MediumTall,
+    /// Medium square 800×800.
+    #[serde(alias = "MediumTall")]
+    MediumSquare,
+    /// Large landscape 1000×780.
     Large,
+    /// Tall portrait 500×900.
     Tall,
     /// Square 600×600.
     Square,
+    /// Portrait 600×700.
+    Portrait,
     /// User-defined size via custom_width / custom_height.
     Custom,
 }
@@ -94,10 +102,11 @@ impl SizePreset {
         match self {
             SizePreset::Small => 600.0,
             SizePreset::Medium => 800.0,
-            SizePreset::MediumTall => 800.0,
+            SizePreset::MediumSquare => 800.0,
             SizePreset::Large => 1000.0,
             SizePreset::Tall => 500.0,
             SizePreset::Square => 600.0,
+            SizePreset::Portrait => 600.0,
             SizePreset::Custom => 0.0, // uses custom_width
         }
     }
@@ -105,10 +114,11 @@ impl SizePreset {
         match self {
             SizePreset::Small => 480.0,
             SizePreset::Medium => 640.0,
-            SizePreset::MediumTall => 800.0,
+            SizePreset::MediumSquare => 800.0,
             SizePreset::Large => 780.0,
             SizePreset::Tall => 900.0,
             SizePreset::Square => 600.0,
+            SizePreset::Portrait => 700.0,
             SizePreset::Custom => 0.0, // uses custom_height
         }
     }
@@ -116,20 +126,22 @@ impl SizePreset {
         match self {
             SizePreset::Small => "Small",
             SizePreset::Medium => "Medium",
-            SizePreset::MediumTall => "Medium Tall",
+            SizePreset::MediumSquare => "Medium Square",
             SizePreset::Large => "Large",
             SizePreset::Tall => "Tall",
             SizePreset::Square => "Square",
+            SizePreset::Portrait => "Portrait",
             SizePreset::Custom => "Custom",
         }
     }
-    pub const ALL: [SizePreset; 7] = [
+    pub const ALL: [SizePreset; 8] = [
         SizePreset::Small,
         SizePreset::Medium,
-        SizePreset::MediumTall,
+        SizePreset::MediumSquare,
         SizePreset::Large,
         SizePreset::Tall,
         SizePreset::Square,
+        SizePreset::Portrait,
         SizePreset::Custom,
     ];
 

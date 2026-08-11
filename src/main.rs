@@ -6,10 +6,6 @@ mod config;
 use config::AppletConfig;
 
 use cosmic::app::{Core, Task};
-use cosmic::applet::cosmic_panel_config::PanelAnchor;
-use cosmic::cctk::sctk::reexports::protocols::xdg::shell::client::xdg_positioner::{
-    Anchor, Gravity,
-};
 use cosmic::cosmic_config::ConfigGet;
 use cosmic::cosmic_config::ConfigSet;
 use cosmic::cosmic_theme::Spacing;
@@ -23,7 +19,7 @@ use cosmic::iced::{
 use cosmic::surface::action::{app_popup, destroy_popup, LiveSettings};
 use cosmic::theme;
 use cosmic::widget::{
-    dropdown, menu, mouse_area, nav_bar, nav_bar_toggle, segmented_button,
+    dropdown, mouse_area, nav_bar, nav_bar_toggle, segmented_button,
 };
 use cosmic::{Application, Element};
 
@@ -36,16 +32,11 @@ use std::sync::{Arc, LazyLock};
 const APP_ID: &str = "com.github.cosmic-kde-launcher";
 const LIST_ICON_SIZE: u16 = 48;
 const SIDEBAR_WIDTH: f32 = 240.0;
+const CONTEXT_PANEL_WIDTH: f32 = 200.0;
 static SEARCH_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(cosmic::widget::Id::unique);
 static SCROLLABLE_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(cosmic::widget::Id::unique);
-// Context menus never bind keys, so one shared empty key-bind map is reused
-// instead of allocating a fresh HashMap per app cell per view.
-#[allow(dead_code)]
-static EMPTY_MENU_KEYBINDS: LazyLock<
-    std::collections::HashMap<menu::KeyBind, AppContextAction>,
-> = LazyLock::new(Default::default);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerAction {
@@ -152,25 +143,6 @@ pub enum Message {
     GridScrolled(f32, f32),
     WindowResized(cosmic::iced::Size),
     AppContextMenu(usize),
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AppContextAction {
-    ToggleFav(usize),
-    PinToTray(usize),
-    UnpinFromTray(usize),
-}
-
-impl menu::Action for AppContextAction {
-    type Message = Message;
-    fn message(&self) -> Self::Message {
-        match self {
-            AppContextAction::ToggleFav(i) => Message::ToggleFavourite(*i),
-            AppContextAction::PinToTray(i) => Message::PinToTray(*i),
-            AppContextAction::UnpinFromTray(i) => Message::UnpinFromTray(*i),
-        }
-    }
 }
 
 impl Application for Applet {
@@ -313,7 +285,6 @@ impl Application for Applet {
 
                 let popup_width = self.config.max_width() as u32;
                 let popup_height = self.config.max_height() as u32;
-                let anchor = self.core.applet.anchor;
                 let max_width = self.config.max_width();
                 let max_height = self.config.max_height();
 
@@ -326,14 +297,8 @@ impl Application for Applet {
                             Some((popup_width, popup_height)),
                             None, None,
                         );
-                        let (a, g) = match anchor {
-                            PanelAnchor::Top => (Anchor::BottomLeft, Gravity::BottomRight),
-                            PanelAnchor::Bottom => (Anchor::TopLeft, Gravity::TopRight),
-                            PanelAnchor::Left => (Anchor::TopRight, Gravity::BottomRight),
-                            PanelAnchor::Right => (Anchor::TopLeft, Gravity::BottomLeft),
-                        };
-                        popup_settings.positioner.anchor = a;
-                        popup_settings.positioner.gravity = g;
+                        // Use canonical anchor/gravity from get_popup_settings,
+                        // but override size and size_limits for our configurable menu.
                         popup_settings.positioner.size = Some((popup_width, popup_height));
                         popup_settings.positioner.size_limits = Limits::NONE
                             .min_width(max_width)
@@ -789,9 +754,12 @@ impl Applet {
         // Calculate the exact height available for the app area so we don't
         // rely on nested Fill inside Shrink chains (which can collapse in the
         // popup_container's autosize wrapper).
+        let is_window = !is_popup;
         let outer_pad = space_xs as f32 * 2.0;
         let has_title = self.sidebar_collapsed && self.selected_category.is_some();
-        let col_spacing_count: u32 = 1 // top_bar → next
+        // In window mode the header bar provides the top buttons, so the
+        // in-content top_bar is collapsed and contributes no spacing.
+        let col_spacing_count: u32 = if is_window { 0 } else { 1 } // top_bar → next
             + if self.search_active { 1 } else { 0 }
             + if has_title { 1 } else { 0 }
             + 1 // → dual_pane
@@ -805,41 +773,46 @@ impl Applet {
             outer_pad, col_spacing_count, total_spacing, app_area_height
         );
 
-        // ── Slim top bar: sidebar toggle + search button + config icon ──
-        let sidebar_toggle: Element<'_, Message> = nav_bar_toggle()
-            .on_toggle(Message::ToggleSidebar)
-            .active(!self.sidebar_collapsed)
+        // In window mode the header bar (header_start/header_end) already
+        // provides sidebar-toggle, search, and config buttons.  In popup mode
+        // we render them as an in-content top bar.
+        let top_bar: Element<'_, Message> = if is_window {
+            Space::new().width(Length::Shrink).height(Length::Shrink).into()
+        } else {
+            let sidebar_toggle: Element<'_, Message> = nav_bar_toggle()
+                .on_toggle(Message::ToggleSidebar)
+                .active(!self.sidebar_collapsed)
+                .into();
+
+            let search_toggle_btn: Element<'_, Message> = cosmic::widget::button::custom(
+                cosmic::widget::icon::from_name("system-search-symbolic")
+                    .symbolic(true).size(18).icon(),
+            )
+            .on_press(Message::ToggleSearch)
+            .class(if self.search_active { theme::Button::Suggested } else { theme::Button::AppletMenu })
             .into();
 
-        let search_toggle_btn: Element<'_, Message> = cosmic::widget::button::custom(
-            cosmic::widget::icon::from_name("system-search-symbolic")
-                .symbolic(true).size(18).icon(),
-        )
-        .on_press(Message::ToggleSearch)
-        .class(if self.search_active { theme::Button::Suggested } else { theme::Button::AppletMenu })
-        .into();
+            let config_btn: Element<'_, Message> = cosmic::widget::button::custom(
+                cosmic::widget::icon::from_name("emblem-system-symbolic")
+                    .symbolic(true).size(18).icon(),
+            )
+            .on_press(Message::ToggleSettings)
+            .class(if self.show_settings { theme::Button::Suggested } else { theme::Button::AppletMenu })
+            .into();
 
-        let config_btn: Element<'_, Message> = cosmic::widget::button::custom(
-            cosmic::widget::icon::from_name("emblem-system-symbolic")
-                .symbolic(true).size(18).icon(),
-        )
-        .on_press(Message::ToggleSettings)
-        .class(if self.show_settings { theme::Button::Suggested } else { theme::Button::AppletMenu })
-        .into();
-
-        let _is_window = !is_popup;
-
-        let top_bar = container(
-            row![
-                sidebar_toggle,
-                search_toggle_btn,
-                Space::new().width(Length::Fill),
-                config_btn,
-            ]
-            .align_y(Alignment::Center)
-            .spacing(space_s),
-        )
-        .width(Length::Fill);
+            container(
+                row![
+                    sidebar_toggle,
+                    search_toggle_btn,
+                    Space::new().width(Length::Fill),
+                    config_btn,
+                ]
+                .align_y(Alignment::Center)
+                .spacing(space_s),
+            )
+            .width(Length::Fill)
+            .into()
+        };
 
         // ── Search bar (collapsible) ──
         let search_row: Option<Element<'_, Message>> = if self.search_active {
@@ -895,6 +868,9 @@ impl Applet {
             if self.show_settings {
                 avail_width -= 300.0;
             }
+            if self.context_menu_target.is_some() {
+                avail_width -= CONTEXT_PANEL_WIDTH + space_xxs as f32;
+            }
             // Each grid button needs at least 80px; compute columns.
             let min_btn = 80.0 + space_s as f32;
             let grid_columns = ((avail_width / min_btn) as usize).max(3).min(8);
@@ -947,9 +923,10 @@ impl Applet {
                             };
                             container(inner)
                                 .center_x(Length::Fill)
-                                .center_y(Length::Fill)
+                                .align_y(Alignment::Start)
                                 .width(Length::Fill)
                                 .height(Length::Fill)
+                                .padding([space_xxs, 0, 0, 0])
                                 .into()
                         };
                         let btn = cosmic::widget::button::custom(content)
@@ -958,23 +935,9 @@ impl Applet {
                             .width(Length::Fill)
                             .height(Length::Fixed(cell_height));
 
-                        // Right-click context menu — inline overlay, no Wayland popup.
-                        let is_pinned = pinned_set.contains(app.id.as_str());
-                        let fav_label = if is_fav { "Unfavourite" } else { "Favourite" };
-                        let pin_label = if is_pinned { "Unpin from Tray" } else { "Pin to Tray" };
-                        let pin_action = if is_pinned {
-                            AppContextAction::UnpinFromTray(index)
-                        } else {
-                            AppContextAction::PinToTray(index)
-                        };
-                        let ctx_menu = menu::items(
-                            &EMPTY_MENU_KEYBINDS,
-                            vec![
-                                menu::Item::Button(fav_label, None, AppContextAction::ToggleFav(index)),
-                                menu::Item::Button(pin_label, None, pin_action),
-                            ],
-                        );
-                        cosmic::widget::context_menu(btn, Some(ctx_menu)).into()
+                        mouse_area(btn)
+                            .on_right_press(Message::AppContextMenu(index))
+                            .into()
                     })
                     .collect();
 
@@ -1040,6 +1003,9 @@ impl Applet {
             if self.show_settings {
                 list_width = list_width.saturating_sub(280);
             }
+            if self.context_menu_target.is_some() {
+                list_width = list_width.saturating_sub(CONTEXT_PANEL_WIDTH as usize + space_xxs as usize);
+            }
 
             let GridMetrics {
                 cols,
@@ -1073,15 +1039,8 @@ impl Applet {
                     let app = &apps[i];
                     let is_fav = fav_set.contains(app.id.as_str());
                     let is_pinned = pinned_set.contains(app.id.as_str());
-                    let fav_label = if is_fav { "Unfavourite" } else { "Favourite" };
-                    let pin_label = if is_pinned { "Unpin from Tray" } else { "Pin to Tray" };
-                    let pin_action = if is_pinned { AppContextAction::UnpinFromTray(i) } else { AppContextAction::PinToTray(i) };
-                    let ctx_menu = menu::items(&EMPTY_MENU_KEYBINDS, vec![
-                        menu::Item::Button(fav_label, None, AppContextAction::ToggleFav(i)),
-                        menu::Item::Button(pin_label, None, pin_action),
-                    ]);
                     let icon = self.cached_icon(app, LIST_ICON_SIZE as f32);
-                    row_children.push(app_list_card(app, icon, space_xxs, space_s, item_width, i, is_fav, is_pinned, ctx_menu));
+                    row_children.push(app_list_card(app, icon, space_xxs, space_s, item_width, i, is_fav, is_pinned));
                 }
                 let missing = cols.saturating_sub(row_children.len());
                 for _ in 0..missing {
@@ -1529,6 +1488,61 @@ impl Applet {
             dual_pane = dual_pane.push(nav);
         }
         dual_pane = dual_pane.push(app_area);
+
+        // ── Context action panel (shown on right-click) ──
+        let context_panel: Option<Element<'_, Message>> =
+            self.context_menu_target.and_then(|idx| {
+                let app = self.available_applications.get(idx)?;
+                let is_fav = self.cached_fav_ids.borrow().contains(app.id.as_str());
+                let is_pinned = self.cached_pinned_ids.borrow().contains(app.id.as_str());
+
+                let fav_btn: Element<'_, Message> = cosmic::widget::button::standard(
+                    if is_fav { "Unfavourite" } else { "Favourite" }
+                )
+                .on_press(Message::ToggleFavourite(idx))
+                .width(Length::Fill)
+                .into();
+
+                let pin_btn: Element<'_, Message> = cosmic::widget::button::standard(
+                    if is_pinned { "Unpin from Tray" } else { "Pin to Tray" }
+                )
+                .on_press(if is_pinned {
+                    Message::UnpinFromTray(idx)
+                } else {
+                    Message::PinToTray(idx)
+                })
+                .width(Length::Fill)
+                .into();
+
+                let close_btn: Element<'_, Message> = cosmic::widget::button::standard("Close")
+                    .on_press(Message::AppContextMenu(idx))
+                    .width(Length::Fill)
+                    .into();
+
+                Some(
+                    container(
+                        column![
+                            cosmic::widget::text::body(&app.name),
+                            Space::new().height(space_xxs),
+                            fav_btn,
+                            pin_btn,
+                            Space::new().height(space_xxs),
+                            close_btn,
+                        ]
+                        .spacing(space_xxs)
+                        .padding(space_s)
+                        .width(Length::Fill),
+                    )
+                    .width(Length::Fixed(CONTEXT_PANEL_WIDTH))
+                    .class(theme::Container::Primary)
+                    .into()
+                )
+            });
+
+        if let Some(cp) = context_panel {
+            dual_pane = dual_pane.push(cp);
+        }
+
         if let Some(sp) = settings_panel {
             dual_pane = dual_pane.push(sp);
         }
@@ -1891,7 +1905,6 @@ fn app_list_card<'a>(
     index: usize,
     is_favourite: bool,
     _is_pinned: bool,
-    ctx_menu: Vec<menu::Tree<Message>>,
 ) -> Element<'a, Message> {
     let summary = app
         .description
@@ -1933,9 +1946,10 @@ fn app_list_card<'a>(
         .height(Length::Fixed(LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0 + 40.0))
         .padding([space_xxs, space_s]),
     )
-    .on_press(Message::LaunchApp(index));
+    .on_press(Message::LaunchApp(index))
+    .on_right_press(Message::AppContextMenu(index));
 
-    cosmic::widget::context_menu(card, Some(ctx_menu)).into()
+    card.into()
 }
 
 // ── Icon helpers ──

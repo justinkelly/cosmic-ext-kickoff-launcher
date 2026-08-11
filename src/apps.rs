@@ -67,37 +67,44 @@ impl ApplicationCategory {
     }
 }
 
-/// Get the list of directories to search for .desktop files.
+/// Get the list of directories to search for .desktop files,
+/// ordered from LOWEST to HIGHEST priority so that the dedup logic
+/// (which keeps the last occurrence) preserves the highest-priority entry.
 fn get_data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    // XDG_DATA_DIRS (colon-separated)
+    // XDG_DATA_DIRS (colon-separated). The first entry has the highest
+    // preference per the XDG spec, so we reverse them: lowest-priority
+    // entries first so higher-priority ones (processed later) win during
+    // deduplication.
     if let Ok(data_dirs) = std::env::var("XDG_DATA_DIRS") {
-        for dir in data_dirs.split(':') {
-            let dir = dir.trim();
-            if !dir.is_empty() {
-                dirs.push(PathBuf::from(dir).join("applications"));
-            }
-        }
+        let mut entries: Vec<PathBuf> = data_dirs
+            .split(':')
+            .map(|d| d.trim())
+            .filter(|d| !d.is_empty())
+            .map(|d| PathBuf::from(d).join("applications"))
+            .collect();
+        entries.reverse();
+        dirs.append(&mut entries);
     }
 
     // Fallback defaults if XDG_DATA_DIRS is empty
     if dirs.is_empty() {
-        dirs.push(PathBuf::from("/usr/local/share/applications"));
         dirs.push(PathBuf::from("/usr/share/applications"));
+        dirs.push(PathBuf::from("/usr/local/share/applications"));
     }
 
-    // Flatpak applications (system)
+    // Flatpak applications (system) — lower priority than local packages
     dirs.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
     // Flatpak applications (user)
     if let Ok(home) = std::env::var("HOME") {
         dirs.push(PathBuf::from(&home).join(".local/share/flatpak/exports/share/applications"));
     }
 
-    // Snap applications
+    // Snap applications — lowest priority
     dirs.push(PathBuf::from("/var/lib/snapd/desktop/applications"));
 
-    // XDG_DATA_HOME (or ~/.local/share)
+    // XDG_DATA_HOME (or ~/.local/share) — HIGHEST priority, appended last
     if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
         dirs.push(PathBuf::from(data_home).join("applications"));
     } else if let Ok(home) = std::env::var("HOME") {
