@@ -1116,8 +1116,19 @@ impl Applet {
                 for i in start..end {
                     let app = &apps[i];
                     let is_fav = fav_set.contains(app.id.as_str());
+                    let is_selected = self.selected_index == Some(i);
                     let icon = self.cached_icon(app, LIST_ICON_SIZE as f32);
-                    row_children.push(app_list_card(app, icon, space_xxs, space_s, text_width, item_width, i, is_fav));
+                    row_children.push(app_list_card(
+                        app,
+                        icon,
+                        space_xxs,
+                        space_s,
+                        text_width,
+                        item_width,
+                        i,
+                        is_fav,
+                        is_selected,
+                    ));
                 }
                 let missing = cols.saturating_sub(row_children.len());
                 for _ in 0..missing {
@@ -1973,6 +1984,50 @@ fn list_grid_metrics(space_xxs: u16, space_s: u16, width: usize) -> GridMetrics 
     GridMetrics::new(width, 320 + 2 * space_s as usize, space_xxs)
 }
 
+/// Idle card look (matches `Container::Card`). Hover/active matches the
+/// left-menu nav highlight: translucent neutral overlay + accent text.
+fn app_list_card_class(selected: bool) -> theme::Button {
+    use cosmic::iced::{Background, Color};
+    use cosmic::widget::button::Style;
+
+    let idle = |theme: &cosmic::Theme| {
+        let cosmic = theme.cosmic();
+        let component = &theme.current_container().component;
+        let mut style = Style::new();
+        style.background = Some(Background::Color(component.base.into()));
+        style.border_radius = cosmic.corner_radii.radius_s.into();
+        style.text_color = Some(component.on.into());
+        style.icon_color = Some(component.on.into());
+        style
+    };
+
+    let highlight = |theme: &cosmic::Theme, alpha: f32| {
+        let cosmic = theme.cosmic();
+        let mut bg: Color = cosmic.palette.neutral_5.into();
+        bg.a = alpha;
+        let mut style = Style::new();
+        style.background = Some(Background::Color(bg));
+        style.border_radius = cosmic.corner_radii.radius_s.into();
+        style.text_color = Some(cosmic.accent_text_color().into());
+        style.icon_color = Some(cosmic.accent.base.into());
+        style
+    };
+
+    theme::Button::Custom {
+        active: Box::new(move |_focused, theme| {
+            if selected {
+                highlight(theme, 0.2)
+            } else {
+                idle(theme)
+            }
+        }),
+        disabled: Box::new(idle),
+        // Match NavBar hover alpha (0.3) from libcosmic segmented_button.
+        hovered: Box::new(move |_focused, theme| highlight(theme, 0.3)),
+        pressed: Box::new(move |_focused, theme| highlight(theme, 0.25)),
+    }
+}
+
 fn app_list_card<'a>(
     app: &'a ApplicationEntry,
     icon: cosmic::widget::icon::Icon,
@@ -1982,6 +2037,7 @@ fn app_list_card<'a>(
     width: usize,
     index: usize,
     is_favourite: bool,
+    is_selected: bool,
 ) -> Element<'a, Message> {
     let summary = app
         .description
@@ -2012,31 +2068,31 @@ fn app_list_card<'a>(
     // matching cosmic-store package_card_view pattern.
     let card_height = LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0;
 
-    mouse_area(
-        container(
-            row![
-                icon,
-                column![
-                    name_row,
-                    cosmic::widget::text::caption(summary)
-                        .height(Length::Fixed(28.0))
-                        .width(Length::Fixed(text_width.max(40.0)))
-                        .wrapping(cosmic::iced::widget::text::Wrapping::Word),
-                ]
-                .spacing(2),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(space_s),
-        )
-        .align_y(Alignment::Center)
+    let content = row![
+        icon,
+        column![
+            name_row,
+            cosmic::widget::text::caption(summary)
+                .height(Length::Fixed(28.0))
+                .width(Length::Fixed(text_width.max(40.0)))
+                .wrapping(cosmic::iced::widget::text::Wrapping::Word),
+        ]
+        .spacing(2),
+    ]
+    .align_y(Alignment::Center)
+    .spacing(space_s);
+
+    let btn = cosmic::widget::button::custom(content)
+        .force_enabled(true)
+        .padding([space_xxs, space_s])
         .width(Length::Fixed(width as f32))
         .height(Length::Fixed(card_height))
-        .padding([space_xxs, space_s])
-        .class(theme::Container::Card),
-    )
-    .on_press(Message::LaunchApp(index))
-    .on_right_press(Message::AppContextMenu(index))
-    .into()
+        .class(app_list_card_class(is_selected));
+
+    mouse_area(btn)
+        .on_press(Message::LaunchApp(index))
+        .on_right_press(Message::AppContextMenu(index))
+        .into()
 }
 
 // ── Icon helpers ──
