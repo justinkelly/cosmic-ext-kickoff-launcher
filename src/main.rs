@@ -30,7 +30,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 const APP_ID: &str = "com.github.cosmic-kde-launcher";
-const LIST_ICON_SIZE: u16 = 64;
+const GRID_ICON_SIZE: u16 = 64;
+const LIST_ICON_SIZE: u16 = 48;
 const SIDEBAR_WIDTH: f32 = 240.0;
 const CONTEXT_PANEL_WIDTH: f32 = 200.0;
 static SEARCH_ID: LazyLock<cosmic::widget::Id> =
@@ -104,6 +105,9 @@ pub struct Applet {
     icon_cache: RefCell<HashMap<(String, u16), cosmic::widget::icon::Icon>>,
     cached_fav_ids: RefCell<HashSet<String>>,
     cached_pinned_ids: RefCell<HashSet<String>>,
+    /// Set of .desktop file basenames known at last scan — used to detect
+    /// new/removed apps without a full re-parse.
+    known_desktop_ids: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +147,10 @@ pub enum Message {
     GridScrolled(f32, f32),
     WindowResized(cosmic::iced::Size),
     AppContextMenu(usize),
+    /// Periodic app-list refresh — detects newly installed/removed apps.
+    RefreshApps,
+    /// Result of a background app-list reload.
+    AppsRefreshed(Vec<Arc<ApplicationEntry>>, Vec<ApplicationCategory>),
 }
 
 impl Application for Applet {
@@ -190,6 +198,7 @@ impl Application for Applet {
             icon_cache: RefCell::new(HashMap::new()),
             cached_fav_ids: RefCell::new(HashSet::new()),
             cached_pinned_ids: RefCell::new(HashSet::new()),
+            known_desktop_ids: apps::list_desktop_ids(),
         };
         for id in &pinned_apps {
             applet.cached_pinned_ids.borrow_mut().insert(id.clone());
@@ -245,8 +254,7 @@ impl Application for Applet {
                 self.grid_scroll_y = 0.0;
                 self.grid_viewport_h = 0.0;
                 self.sidebar_collapsed = self.config.sidebar_collapsed;
-                // Use cached apps from init — a background refresh task
-                // keeps them up to date without blocking the UI.
+                // Apps are kept up to date by the periodic RefreshApps subscription.
                 self.available_applications = self.all_applications.clone();
                 self.rebuild_nav_model();
 
@@ -661,6 +669,65 @@ impl Application for Applet {
                 }
                 Task::none()
             }
+            Message::RefreshApps => {
+                let current = apps::list_desktop_ids();
+                if current == self.known_desktop_ids {
+                    return Task::none();
+                }
+                // Desktop files changed — reload in background, then update state.
+                return Task::future(async move {
+                    let apps = tokio::task::spawn_blocking(|| {
+                        let a = apps::load_apps();
+                        let c = apps::load_categories(&a);
+                        (a, c)
+                    })
+                    .await
+                    .unwrap_or_default();
+                    cosmic::action::app(Message::AppsRefreshed(apps.0, apps.1))
+                });
+            }
+            Message::AppsRefreshed(apps, categories) => {
+                self.all_applications = apps;
+                self.available_categories = categories;
+                self.known_desktop_ids = apps::list_desktop_ids();
+                self.rebuild_nav_model();
+                // If popup is open, re-apply current view filters.
+                if self.popup.is_some() {
+                    if self.search_active {
+                        let input = self.search_field.clone();
+                        self.available_applications = if input.is_empty() {
+                            self.all_applications.clone()
+                        } else {
+                            apps::filter_apps(&self.all_applications, &input)
+                        };
+                    } else if let Some(ref cat) = self.selected_category {
+                        self.available_applications = match cat.key.as_str() {
+                            "favourites" => {
+                                let mut favs = apps::filter_by_ids(
+                                    &self.all_applications,
+                                    &self.config.favourites,
+                                );
+                                favs.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
+                                favs
+                            }
+                            "recents" => apps::filter_by_ids(
+                                &self.all_applications,
+                                &self.config.recents,
+                            ),
+                            _ => apps::filter_apps_by_category(&self.all_applications, cat),
+                        };
+                    } else {
+                        self.available_applications = self.all_applications.clone();
+                    }
+                    // Deselect if the index is now out of bounds.
+                    if let Some(idx) = self.selected_index {
+                        if idx >= self.available_applications.len() {
+                            self.selected_index = None;
+                        }
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -672,8 +739,15 @@ impl Application for Applet {
         use cosmic::iced::event;
         use cosmic::iced::keyboard;
         use cosmic::iced::window;
+        use std::time::Duration;
 
         let mut subs = Vec::new();
+
+        // Periodic app-list refresh — detects newly installed/removed apps.
+        subs.push(
+            cosmic::iced::time::every(Duration::from_secs(10))
+                .map(|_| Message::RefreshApps),
+        );
 
         // Track window size changes for responsive layout in windowed mode.
         subs.push(event::listen_with(|event, _status, _window_id| match event {
@@ -849,8 +923,8 @@ impl Applet {
             || (self.config.layout_mode == config::LayoutMode::Hybrid
                 && matches!(self.selected_category.as_ref(),
                     Some(cat) if cat.key == "favourites" || cat.key == "recents"));
-        // Hybrid grid uses a smaller icon size for compact display.
-        let effective_icon_size: f32 = LIST_ICON_SIZE as f32;
+        // Grid view uses the larger package-card icon size (matching cosmic-store).
+        let effective_icon_size: f32 = GRID_ICON_SIZE as f32;
 
         let app_area: Element<'_, Message> = if self.available_applications.is_empty() {
             container(cosmic::widget::text::body("No applications found."))
@@ -1027,7 +1101,7 @@ impl Applet {
 
             // Pre-compute text column width once per view (same for all cards).
             let text_width = item_width.saturating_sub(
-                LIST_ICON_SIZE as usize + space_s as usize * 2 + space_s as usize
+                LIST_ICON_SIZE as usize + space_s as usize * 3
             ) as f32;
 
             let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(last_row.saturating_sub(first_row) + 3);
@@ -1668,7 +1742,7 @@ impl Applet {
         self.nav_model.clear();
 
         // "All Applications" entry
-        let all_icon = cosmic::widget::icon::from_name("applications-system-symbolic")
+        let all_icon = cosmic::widget::icon::from_name("user-home-symbolic")
             .symbolic(true).size(16).icon();
         self.nav_model.insert()
             .text("All Applications")

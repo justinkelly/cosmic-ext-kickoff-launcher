@@ -70,7 +70,7 @@ impl ApplicationCategory {
 /// Get the list of directories to search for .desktop files,
 /// ordered from LOWEST to HIGHEST priority so that the dedup logic
 /// (which keeps the last occurrence) preserves the highest-priority entry.
-fn get_data_dirs() -> Vec<PathBuf> {
+pub fn get_data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
     // XDG_DATA_DIRS (colon-separated). The first entry has the highest
@@ -360,6 +360,25 @@ pub fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<ApplicationCategor
     }
 
     categories
+}
+
+/// Quickly list all .desktop file basenames from data dirs (no parsing).
+/// Used to detect new/removed apps without a full re-parse.
+pub fn list_desktop_ids() -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    for dir in &get_data_dirs() {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(true, |e| e != "desktop") {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                ids.insert(name.to_string());
+            }
+        }
+    }
+    ids
 }
 
 /// Filter apps by search query (case-insensitive match on precomputed lowercase fields).
