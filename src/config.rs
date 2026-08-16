@@ -200,6 +200,16 @@ pub struct AppletConfig {
     /// Hide the category sidebar when the menu first opens.
     #[serde(default)]
     pub sidebar_collapsed: bool,
+    /// Show pinned app shortcuts on the bottom bar (far left).
+    #[serde(default, alias = "show_bottom_bar_apps")]
+    pub show_bottom_bar_pinned: bool,
+    /// Show session/power actions (lock, logout, suspend, etc.) on the bottom bar.
+    #[serde(default = "default_show_bottom_bar_power_actions")]
+    pub show_bottom_bar_power_actions: bool,
+}
+
+fn default_show_bottom_bar_power_actions() -> bool {
+    true
 }
 
 fn default_category() -> String { "all".into() }
@@ -222,6 +232,8 @@ impl Default for AppletConfig {
             favourites: Vec::new(),
             default_category: "all".into(),
             sidebar_collapsed: false,
+            show_bottom_bar_pinned: false,
+            show_bottom_bar_power_actions: true,
         }
     }
 }
