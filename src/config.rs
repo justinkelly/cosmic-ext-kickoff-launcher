@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -15,34 +16,7 @@ pub enum LayoutMode {
     Hybrid,
 }
 
-impl LayoutMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            LayoutMode::Grid => "Grid View",
-            LayoutMode::List => "List View",
-            LayoutMode::Hybrid => "Hybrid View",
-        }
-    }
-
-    pub fn icon_name(&self) -> &'static str {
-        match self {
-            LayoutMode::Grid => "view-grid-symbolic",
-            LayoutMode::List => "view-list-symbolic",
-            LayoutMode::Hybrid => "view-grid-symbolic", // grid icon for hybrid
-        }
-    }
-
-    /// Next mode in the cycle: Grid → List → Hybrid → Grid
-    pub fn next(self) -> Self {
-        match self {
-            LayoutMode::Grid => LayoutMode::List,
-            LayoutMode::List => LayoutMode::Hybrid,
-            LayoutMode::Hybrid => LayoutMode::Grid,
-        }
-    }
-}
-
-// Custom serde: accepts both bool (old configs) and string (new configs).
+// Custom serde: accepts both bool (legacy configs) and string (current configs).
 impl Serialize for LayoutMode {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(match self {
@@ -56,7 +30,7 @@ impl Serialize for LayoutMode {
 impl<'de> Deserialize<'de> for LayoutMode {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
+        impl serde::de::Visitor<'_> for Visitor {
             type Value = LayoutMode;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("\"grid\", \"list\", \"hybrid\", or boolean")
@@ -69,13 +43,14 @@ impl<'de> Deserialize<'de> for LayoutMode {
                     "grid" => Ok(LayoutMode::Grid),
                     "list" => Ok(LayoutMode::List),
                     "hybrid" => Ok(LayoutMode::Hybrid),
-                    _ => Err(E::custom(format!("unknown layout mode: {}", v))),
+                    _ => Err(E::custom(format!("unknown layout mode: {v}"))),
                 }
             }
         }
         d.deserialize_any(Visitor)
     }
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SizePreset {
     /// Small landscape 600×480.
@@ -98,7 +73,7 @@ pub enum SizePreset {
 }
 
 impl SizePreset {
-    pub fn width(&self) -> f32 {
+    pub const fn width(self) -> f32 {
         match self {
             SizePreset::Small => 600.0,
             SizePreset::Medium => 800.0,
@@ -110,7 +85,8 @@ impl SizePreset {
             SizePreset::Custom => 0.0, // uses custom_width
         }
     }
-    pub fn height(&self) -> f32 {
+
+    pub const fn height(self) -> f32 {
         match self {
             SizePreset::Small => 480.0,
             SizePreset::Medium => 640.0,
@@ -122,18 +98,7 @@ impl SizePreset {
             SizePreset::Custom => 0.0, // uses custom_height
         }
     }
-    pub fn label(&self) -> &'static str {
-        match self {
-            SizePreset::Small => "Small",
-            SizePreset::Medium => "Medium",
-            SizePreset::MediumSquare => "Medium Square",
-            SizePreset::Large => "Large",
-            SizePreset::Tall => "Tall",
-            SizePreset::Square => "Square",
-            SizePreset::Portrait => "Portrait",
-            SizePreset::Custom => "Custom",
-        }
-    }
+
     pub const ALL: [SizePreset; 8] = [
         SizePreset::Small,
         SizePreset::Medium,
@@ -146,23 +111,38 @@ impl SizePreset {
     ];
 
     /// Override pixel width (0 = use preset).
-    pub fn effective_width(&self, custom: f32) -> f32 {
+    pub fn effective_width(self, custom: f32) -> f32 {
         match self {
             SizePreset::Custom => custom.max(400.0),
-            _ => if custom > 0.0 { custom } else { self.width() },
+            _ => {
+                if custom > 0.0 {
+                    custom
+                } else {
+                    self.width()
+                }
+            }
         }
     }
+
     /// Override pixel height (0 = use preset).
-    pub fn effective_height(&self, custom: f32) -> f32 {
+    pub fn effective_height(self, custom: f32) -> f32 {
         match self {
             SizePreset::Custom => custom.max(300.0),
-            _ => if custom > 0.0 { custom } else { self.height() },
+            _ => {
+                if custom > 0.0 {
+                    custom
+                } else {
+                    self.height()
+                }
+            }
         }
     }
 }
 
-/// Applet configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Applet configuration, managed by cosmic-config (cosmic-settings-daemon keeps
+/// live instances in sync via the `dbus-config` feature).
+#[derive(Debug, Clone, CosmicConfigEntry, Serialize, Deserialize, PartialEq)]
+#[version = 1]
 pub struct AppletConfig {
     /// Layout mode: Grid, List, or Hybrid (Favs+Recents grid, rest list).
     /// Stored as `use_grid` in TOML for backward compat (old bool → Grid/List).
@@ -212,7 +192,9 @@ fn default_show_bottom_bar_power_actions() -> bool {
     true
 }
 
-fn default_category() -> String { "all".into() }
+fn default_category() -> String {
+    "all".into()
+}
 
 impl Default for AppletConfig {
     fn default() -> Self {
@@ -239,35 +221,6 @@ impl Default for AppletConfig {
 }
 
 impl AppletConfig {
-    /// Get the config file path.
-    fn config_path() -> PathBuf {
-        let base = if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-            PathBuf::from(dir)
-        } else if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join(".config")
-        } else {
-            PathBuf::from(".")
-        };
-        base.join("cosmic-kde-launcher").join("config.toml")
-    }
-
-    /// Load config from disk, falling back to defaults.
-    pub fn load() -> Self {
-        let path = Self::config_path();
-        let mut config = if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Ok(config) = toml::from_str(&contents) {
-                tracing::info!("Loaded config from {:?}", path);
-                config
-            } else {
-                Self::default()
-            }
-        } else {
-            Self::default()
-        };
-        config.sanitize();
-        config
-    }
-
     /// Effective popup width (preset × override).
     pub fn max_width(&self) -> f32 {
         self.size_preset.effective_width(self.custom_width)
@@ -279,11 +232,11 @@ impl AppletConfig {
     }
 
     /// Ensure values are within reasonable bounds (auto-upgrades stale configs).
-    fn sanitize(&mut self) {
+    pub fn sanitize(&mut self) {
         if self.grid_columns < 3 {
             self.grid_columns = 6;
         }
-        if self.icon_size < 24.0 || self.icon_size > 56.0 {
+        if !(24.0..=56.0).contains(&self.icon_size) {
             self.icon_size = 48.0;
         }
         // Clamp custom dimensions to reasonable bounds.
@@ -292,18 +245,6 @@ impl AppletConfig {
         }
         if self.custom_height > 0.0 && self.custom_height < 300.0 {
             self.custom_height = 300.0;
-        }
-    }
-
-    /// Save config to disk.
-    pub fn save(&self) {
-        let path = Self::config_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(contents) = toml::to_string_pretty(self) {
-            let _ = std::fs::write(&path, contents);
-            tracing::info!("Saved config to {:?}", path);
         }
     }
 
@@ -325,5 +266,34 @@ impl AppletConfig {
             self.favourites.push(app_id.to_string());
             true
         }
+    }
+
+    /// Path of the legacy hand-rolled TOML config (pre-cosmic-config).
+    fn legacy_config_path() -> Option<PathBuf> {
+        let base = if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+            PathBuf::from(dir)
+        } else {
+            std::env::var("HOME").ok().map(PathBuf::from)?.join(".config")
+        };
+        Some(base.join("cosmic-kde-launcher").join("config.toml"))
+    }
+
+    /// One-time migration from the legacy `~/.config/cosmic-kde-launcher/config.toml`
+    /// into the cosmic-config entry. Returns the migrated config on success.
+    pub fn migrate_legacy(context: &cosmic_config::Config) -> Option<Self> {
+        let path = Self::legacy_config_path()?;
+        let contents = std::fs::read_to_string(&path).ok()?;
+        let mut config: AppletConfig = toml::from_str(&contents).ok()?;
+        config.sanitize();
+        if let Err(err) = config.write_entry(context) {
+            tracing::warn!("Failed to write migrated config: {err}");
+            return None;
+        }
+        tracing::info!("Migrated legacy config.toml to cosmic-config");
+        // Rename the legacy file so stale defaults can't resurrect old settings.
+        if let Err(err) = std::fs::rename(&path, path.with_extension("toml.migrated")) {
+            tracing::warn!("Failed to rename legacy config file: {err}");
+        }
+        Some(config)
     }
 }

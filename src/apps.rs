@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use crate::fl;
+use i18n_embed::unic_langid::LanguageIdentifier;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,7 +28,6 @@ pub struct ApplicationEntry {
     /// Whether the app runs in a terminal
     pub is_terminal: bool,
     /// Path to the desktop file
-    #[allow(dead_code)]
     pub path: PathBuf,
 }
 
@@ -45,7 +46,7 @@ impl ApplicationCategory {
     pub fn all() -> Self {
         ApplicationCategory {
             key: "all".to_string(),
-            display_name: "All".to_string(),
+            display_name: fl!("cat-all"),
             icon_name: "applications-system-symbolic".to_string(),
         }
     }
@@ -53,7 +54,7 @@ impl ApplicationCategory {
     pub fn favourites() -> Self {
         ApplicationCategory {
             key: "favourites".to_string(),
-            display_name: "Favourites".to_string(),
+            display_name: fl!("favourites"),
             icon_name: "starred-symbolic".to_string(),
         }
     }
@@ -61,7 +62,7 @@ impl ApplicationCategory {
     pub fn recents() -> Self {
         ApplicationCategory {
             key: "recents".to_string(),
-            display_name: "Recents".to_string(),
+            display_name: fl!("recents"),
             icon_name: "document-open-recent-symbolic".to_string(),
         }
     }
@@ -111,13 +112,14 @@ pub fn get_data_dirs() -> Vec<PathBuf> {
         dirs.push(PathBuf::from(home).join(".local/share/applications"));
     }
 
-    tracing::info!("Searching for .desktop files in: {:?}", dirs);
+    tracing::debug!("Searching for .desktop files in: {:?}", dirs);
 
     dirs
 }
 
 /// Load all desktop applications from XDG data directories.
 pub fn load_apps() -> Vec<Arc<ApplicationEntry>> {
+    let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
     let mut apps: Vec<Arc<ApplicationEntry>> = Vec::new();
     let data_dirs = get_data_dirs();
 
@@ -139,7 +141,7 @@ pub fn load_apps() -> Vec<Arc<ApplicationEntry>> {
             }
             total_files += 1;
 
-            match parse_desktop_file(&path) {
+            match parse_desktop_file(&path, &languages) {
                 Ok(Some(app)) => {
                     if app.name.is_empty() {
                         continue;
@@ -184,7 +186,10 @@ pub fn load_apps() -> Vec<Arc<ApplicationEntry>> {
 /// - `Ok(Some(app))` if it's a valid launcher
 /// - `Ok(None)` if it should be skipped (NoDisplay, Hidden, no Exec, etc.)
 /// - `Err(msg)` on parse failure
-fn parse_desktop_file(path: &std::path::Path) -> Result<Option<ApplicationEntry>, String> {
+fn parse_desktop_file(
+    path: &std::path::Path,
+    languages: &[LanguageIdentifier],
+) -> Result<Option<ApplicationEntry>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read error: {}", e))?;
     let content = String::from_utf8_lossy(&bytes);
 
@@ -196,16 +201,22 @@ fn parse_desktop_file(path: &std::path::Path) -> Result<Option<ApplicationEntry>
     // Parse the [Desktop Entry] section into a map — single scan, no per-key re-searching.
     let entries = parse_section(&content, "Desktop Entry");
 
-    let name = match entries.get("Name") {
-        Some(n) if !n.is_empty() => n.clone(),
+    let name = match localized(&entries, "Name", languages) {
+        Some(n) if !n.is_empty() => n,
         _ => return Ok(None),
     };
 
     // Skip hidden entries
-    if entries.get("NoDisplay").map(|v| v.to_lowercase() == "true").unwrap_or(false) {
+    if entries
+        .get("NoDisplay")
+        .is_some_and(|v| v.to_lowercase() == "true")
+    {
         return Ok(None);
     }
-    if entries.get("Hidden").map(|v| v.to_lowercase() == "true").unwrap_or(false) {
+    if entries
+        .get("Hidden")
+        .is_some_and(|v| v.to_lowercase() == "true")
+    {
         return Ok(None);
     }
 
@@ -220,6 +231,18 @@ fn parse_desktop_file(path: &std::path::Path) -> Result<Option<ApplicationEntry>
         }
     }
 
+    // OnlyShowIn limits the desktop environments the app appears in.
+    if let Some(only_show_in) = entries.get("OnlyShowIn") {
+        let osi = only_show_in.to_lowercase();
+        let shown = osi.split(';').any(|de| {
+            let de = de.trim();
+            de == "cosmic" || de == "pop:cosmic"
+        });
+        if !shown {
+            return Ok(None);
+        }
+    }
+
     // Must have Type=Application (or no Type key, which defaults to Application)
     if entries.get("Type").map_or(false, |t| t != "Application") {
         return Ok(None);
@@ -228,7 +251,7 @@ fn parse_desktop_file(path: &std::path::Path) -> Result<Option<ApplicationEntry>
     let exec = entries.get("Exec").cloned();
     let icon = entries.get("Icon").cloned();
     let categories_str = entries.get("Categories").cloned();
-    let comment = entries.get("Comment").cloned();
+    let comment = localized(&entries, "Comment", languages);
     let terminal = entries.get("Terminal")
         .map(|t| t.to_lowercase() == "true")
         .unwrap_or(false);
@@ -264,6 +287,28 @@ fn parse_desktop_file(path: &std::path::Path) -> Result<Option<ApplicationEntry>
         is_terminal: terminal,
         path: path.to_path_buf(),
     }))
+}
+
+/// Look up a localized desktop-entry key (e.g. `Name[fr]`), falling back from
+/// the full language tag to its primary subtag, then to the untagged key.
+fn localized(
+    entries: &HashMap<String, String>,
+    base: &str,
+    languages: &[LanguageIdentifier],
+) -> Option<String> {
+    for lang in languages {
+        if let Some(value) = entries.get(&format!("{base}[{lang}]")) {
+            if !value.is_empty() {
+                return Some(value.clone());
+            }
+        }
+        if let Some(value) = entries.get(&format!("{base}[{}]", lang.language)) {
+            if !value.is_empty() {
+                return Some(value.clone());
+            }
+        }
+    }
+    entries.get(base).cloned()
 }
 
 /// Parse a desktop-file section into a `HashMap<key, value>`. Single pass, no allocations per key.
@@ -307,18 +352,35 @@ static KNOWN_KEYS_SET: std::sync::LazyLock<std::collections::HashSet<&'static st
     std::sync::LazyLock::new(|| KNOWN_CATEGORY_KEYS.iter().copied().collect());
 
 /// Consolidated category groups mapping source keys → display group.
-const CATEGORY_GROUPS: &[(&str, &str, &str, &[&str])] = &[
-    ("Multimedia", "Multimedia", "applications-multimedia-symbolic", &["AudioVideo", "Audio", "Video"]),
-    ("Development", "Development", "applications-engineering-symbolic", &["Development"]),
-    ("Education", "Education", "applications-education-symbolic", &["Education"]),
-    ("Games", "Games", "applications-games-symbolic", &["Game"]),
-    ("Graphics", "Graphics", "applications-graphics-symbolic", &["Graphics"]),
-    ("Internet", "Internet", "applications-internet-symbolic", &["Network"]),
-    ("Office", "Office", "applications-office-symbolic", &["Office"]),
-    ("Science", "Science", "applications-science-symbolic", &["Science"]),
-    ("Settings", "Settings", "preferences-system-symbolic", &["Settings"]),
-    ("System", "System", "applications-system-symbolic", &["System", "Utility"]),
+const CATEGORY_GROUPS: &[(&str, &str, &[&str])] = &[
+    ("Multimedia", "applications-multimedia-symbolic", &["AudioVideo", "Audio", "Video"]),
+    ("Development", "applications-engineering-symbolic", &["Development"]),
+    ("Education", "applications-education-symbolic", &["Education"]),
+    ("Games", "applications-games-symbolic", &["Game"]),
+    ("Graphics", "applications-graphics-symbolic", &["Graphics"]),
+    ("Internet", "applications-internet-symbolic", &["Network"]),
+    ("Office", "applications-office-symbolic", &["Office"]),
+    ("Science", "applications-science-symbolic", &["Science"]),
+    ("Settings", "preferences-system-symbolic", &["Settings"]),
+    ("System", "applications-system-symbolic", &["System", "Utility"]),
 ];
+
+/// Localized display name for a consolidated category group.
+fn group_display_name(key: &str) -> String {
+    match key {
+        "Multimedia" => fl!("cat-multimedia"),
+        "Development" => fl!("cat-development"),
+        "Education" => fl!("cat-education"),
+        "Games" => fl!("cat-games"),
+        "Graphics" => fl!("cat-graphics"),
+        "Internet" => fl!("cat-internet"),
+        "Office" => fl!("cat-office"),
+        "Science" => fl!("cat-science"),
+        "Settings" => fl!("cat-settings"),
+        "System" => fl!("cat-system"),
+        _ => key.to_string(),
+    }
+}
 
 /// Derive categories from the loaded applications (consolidated groups).
 pub fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<ApplicationCategory> {
@@ -333,15 +395,16 @@ pub fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<ApplicationCategor
     let mut categories: Vec<ApplicationCategory> = Vec::new();
 
     // Build consolidated groups
-    for (group_key, display_name, icon_name, source_keys) in CATEGORY_GROUPS {
-        let total: usize = source_keys.iter()
+    for (group_key, icon_name, source_keys) in CATEGORY_GROUPS {
+        let total: usize = source_keys
+            .iter()
             .map(|k| counts.get(*k).copied().unwrap_or(0))
             .sum();
         if total > 0 {
             categories.push(ApplicationCategory {
-                key: group_key.to_string(),
-                display_name: display_name.to_string(),
-                icon_name: icon_name.to_string(),
+                key: (*group_key).to_string(),
+                display_name: group_display_name(group_key),
+                icon_name: (*icon_name).to_string(),
             });
         }
     }
@@ -354,7 +417,7 @@ pub fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<ApplicationCategor
     if has_other {
         categories.push(ApplicationCategory {
             key: "Other".to_string(),
-            display_name: "Other".to_string(),
+            display_name: fl!("cat-other"),
             icon_name: "applications-other-symbolic".to_string(),
         });
     }
@@ -417,9 +480,10 @@ pub fn filter_apps_by_category(
     }
 
     // Look up which raw .desktop keys map to this group
-    let source_keys: &[&str] = CATEGORY_GROUPS.iter()
-        .find(|(key, _, _, _)| *key == category.key)
-        .map(|(_, _, _, keys)| *keys)
+    let source_keys: &[&str] = CATEGORY_GROUPS
+        .iter()
+        .find(|(key, _, _)| *key == category.key)
+        .map(|(_, _, keys)| *keys)
         .unwrap_or(&[]);
 
     if source_keys.is_empty() {
