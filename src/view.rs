@@ -36,7 +36,12 @@ const ICON_OPTIONS: &[(&str, &str)] = &[
     ("com.system76.CosmicAppLibrary", "COSMIC App Library"),
     ("cosmic-logo", "COSMIC"),
     ("system76-logo", "System76"),
-    ("kde", "KDE"),
+    ("kde-official", "KDE (official)"),
+    ("kde-oxygen", "KDE Gear (Oxygen)"),
+    ("kde-plasma", "KDE Plasma"),
+    ("kubuntu", "Kubuntu"),
+    ("kde-neon", "KDE neon"),
+    ("kde-classic", "KDE 2 / Classic (legacy)"),
     ("gnome-logo", "GNOME"),
     ("application-menu-symbolic", "App Menu"),
     ("open-menu-symbolic", "Menu"),
@@ -327,28 +332,27 @@ impl Applet {
                                 .width(Length::Fill)
                                 .height(Length::Fill)
                                 .padding([space_xxs, 0, 0, 0]);
-                            if let Some(corners) = app_corner_overlay(
-                                index,
-                                is_fav,
-                                is_pinned,
-                                space_xxs,
-                                show_actions,
-                            ) {
-                                stack![inner, corners]
-                                    .width(Length::Fill)
-                                    .height(Length::Fill)
-                                    .into()
+                            if show_actions {
+                                stack![
+                                    inner,
+                                    container(app_action_row(index, is_fav, is_pinned, true))
+                                        .width(Length::Fill)
+                                        .height(Length::Fill)
+                                        .align_y(Alignment::Start)
+                                        // Keep the action glyphs close to the card's
+                                        // top and side borders.
+                                        .padding(0),
+                                ]
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .into()
                             } else {
                                 inner.into()
                             }
                         };
                         let btn = button::custom(content)
                             .on_press(Message::LaunchApp(index))
-                            .class(if is_selected {
-                                theme::Button::Suggested
-                            } else {
-                                theme::Button::AppletMenu
-                            })
+                            .class(app_list_card_class(is_selected))
                             .width(Length::Fill)
                             .height(Length::Fixed(cell_height));
 
@@ -410,7 +414,13 @@ impl Applet {
                 rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
             }
 
-            let app_grid = column(rows).spacing(space_s).width(Length::Fill);
+            // Keep the trailing gutter inside the scrollable content. The
+            // scrollbar occupies the viewport's right edge, so without this
+            // inset the final column is flush against it while the first
+            // column still has the main layout's leading padding.
+            let app_grid = container(column(rows).spacing(space_s))
+                .padding([0, space_xxs, 0, 0])
+                .width(Length::Fill);
             container(
                 scrollable(app_grid)
                     .id((*SCROLLABLE_ID).clone())
@@ -640,10 +650,12 @@ impl Applet {
                 });
 
             // Panel icon dropdown
-            let current_icon = if self.config.panel_icon.is_empty() {
-                "cosmic-logo"
-            } else {
-                &self.config.panel_icon
+            let current_icon = match self.config.panel_icon.as_str() {
+                "" => "cosmic-logo",
+                // Migrate the old bundled KDE icon visually without changing
+                // the user's persisted configuration on every view rebuild.
+                "kde" => "kde-official",
+                name => name,
             };
             let selected_idx = ICON_OPTIONS
                 .iter()
@@ -1062,29 +1074,7 @@ fn bottom_bar_pinned_item(
         space_xs,
     );
 
-    let content: Element<'static, Message> = if hovered {
-        stack![
-            launch_btn,
-            container(
-                corner_icon_button(
-                    corner_unpin_icon(),
-                    Message::UnpinFromTrayById(pinned_id.to_string()),
-                    fl!("unpin-from-tray"),
-                ),
-            )
-            .align_x(Alignment::Start)
-            .align_y(Alignment::Start)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(space_xxs),
-        ]
-        .width(Length::Fill)
-        .into()
-    } else {
-        launch_btn
-    };
-
-    mouse_area(content)
+    mouse_area(launch_btn)
         .on_enter(Message::PinnedBarHovered(pinned_id.to_string()))
         .on_exit(Message::PinnedBarUnhovered(pinned_id.to_string()))
         .into()
@@ -1128,17 +1118,31 @@ fn bottom_bar_action_button(
     }
 }
 
-fn corner_fav_icon(is_favourite: bool) -> cosmic::widget::icon::Icon {
-    let name = if is_favourite {
-        "starred-symbolic"
-    } else {
-        "non-starred-symbolic"
-    };
-    icon::from_name(name)
+const ACTION_ROW_HEIGHT: f32 = 24.0;
+
+fn action_icon(name: &str, is_active: bool) -> cosmic::widget::icon::Icon {
+    let icon = icon::from_name(name)
         .symbolic(true)
         .prefer_svg(true)
         .size(CORNER_BADGE_ICON_SIZE)
-        .icon()
+        .icon();
+
+    icon.class(theme::Svg::Custom(std::rc::Rc::new(move |theme| {
+        let color = if is_active {
+            theme.cosmic().accent_color()
+        } else {
+            theme.cosmic().background(true).on
+        };
+        cosmic::iced::widget::svg::Style {
+            color: Some(color.into()),
+        }
+    })))
+}
+
+fn corner_fav_icon(is_favourite: bool) -> cosmic::widget::icon::Icon {
+    // Keep the glyph filled in both states; state is communicated by the
+    // COSMIC accent color rather than switching to an outline star.
+    action_icon("starred-symbolic", is_favourite)
 }
 
 fn corner_pin_icon(is_pinned: bool) -> cosmic::widget::icon::Icon {
@@ -1147,26 +1151,25 @@ fn corner_pin_icon(is_pinned: bool) -> cosmic::widget::icon::Icon {
     } else {
         ("view-pin-symbolic", &["pin-symbolic", "xapp-pin-symbolic"])
     };
-    icon::from_name(name)
+    let icon = icon::from_name(name)
         .symbolic(true)
         .prefer_svg(true)
         .size(CORNER_BADGE_ICON_SIZE)
         .fallback(Some(icon::IconFallback::Names(
             fallbacks.iter().map(|s| Cow::from(*s)).collect(),
         )))
-        .icon()
-}
+        .icon();
 
-fn corner_unpin_icon() -> cosmic::widget::icon::Icon {
-    icon::from_name("window-unpin-symbolic")
-        .symbolic(true)
-        .prefer_svg(true)
-        .size(CORNER_BADGE_ICON_SIZE)
-        .fallback(Some(icon::IconFallback::Names(vec![
-            Cow::Borrowed("xapp-unpin-symbolic"),
-            Cow::Borrowed("pin-symbolic"),
-        ])))
-        .icon()
+    icon.class(theme::Svg::Custom(std::rc::Rc::new(move |theme| {
+        let color = if is_pinned {
+            theme.cosmic().accent_color()
+        } else {
+            theme.cosmic().background(true).on
+        };
+        cosmic::iced::widget::svg::Style {
+            color: Some(color.into()),
+        }
+    })))
 }
 
 fn corner_icon_button(
@@ -1174,15 +1177,21 @@ fn corner_icon_button(
     message: Message,
     tooltip_text: String,
 ) -> Element<'static, Message> {
+    let button = button::custom(icon)
+        .on_press(message)
+        .class(theme::Button::Icon)
+        .padding(2)
+        .width(Length::Fixed(ACTION_ROW_HEIGHT))
+        .height(Length::Fixed(ACTION_ROW_HEIGHT));
     tooltip(
-        mouse_area(icon).on_press(message),
+        button,
         cosmic::widget::text::body(tooltip_text),
         cosmic::widget::tooltip::Position::Top,
     )
     .into()
 }
 
-/// Pin (top-left) and favourite (top-right) action buttons shown on app hover.
+/// Compact action button placed beside the app icon.
 fn app_pin_action_button(index: usize, is_pinned: bool) -> Element<'static, Message> {
     let (pin_msg, tooltip_text) = if is_pinned {
         (Message::UnpinFromTray(index), fl!("unpin-from-tray"))
@@ -1205,37 +1214,44 @@ fn app_fav_action_button(index: usize, is_favourite: bool) -> Element<'static, M
     )
 }
 
-/// Pin top-left, favourite top-right — icons appear only on app hover.
-fn app_corner_overlay(
+/// Pin and favourite actions remain discoverable above grid icons and beside
+/// list icons. Active actions use the theme accent; inactive actions are
+/// solid monochrome foreground icons.
+fn app_action_row(
     index: usize,
     is_favourite: bool,
     is_pinned: bool,
-    space_xxs: u16,
-    hovered: bool,
-) -> Option<Element<'static, Message>> {
-    if !hovered {
-        return None;
+    show_actions: bool,
+) -> Element<'static, Message> {
+    if !show_actions {
+        return Space::new()
+            .width(Length::Fill)
+            .height(Length::Fixed(ACTION_ROW_HEIGHT))
+            .into();
     }
 
-    let pin_left = app_pin_action_button(index, is_pinned);
-    let fav_right = app_fav_action_button(index, is_favourite);
+    row![
+        app_pin_action_button(index, is_pinned),
+        Space::new().width(Length::Fill),
+        app_fav_action_button(index, is_favourite),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fixed(ACTION_ROW_HEIGHT))
+    .align_y(Alignment::Center)
+    .into()
+}
 
-    Some(
-        container(
-            row![
-                pin_left,
-                Space::new().width(Length::Fill),
-                fav_right,
-            ]
-            .width(Length::Fill)
-            .align_y(Alignment::Start),
-        )
-        .align_y(Alignment::Start)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(space_xxs)
-        .into(),
-    )
+fn app_action_buttons(
+    index: usize,
+    is_favourite: bool,
+    is_pinned: bool,
+) -> Element<'static, Message> {
+    row![
+        app_pin_action_button(index, is_pinned),
+        app_fav_action_button(index, is_favourite),
+    ]
+    .spacing(0)
+    .into()
 }
 
 /// Idle card look (matches `Container::Card`). Hover/active uses the
@@ -1328,17 +1344,19 @@ fn app_list_card<'a>(
     .spacing(space_s)
     .width(Length::Fill);
 
-    let card_content: Element<'a, Message> = if let Some(corners) = app_corner_overlay(
-        index,
-        is_favourite,
-        is_pinned,
-        space_xxs,
-        show_actions,
-    ) {
-        stack![card_body, corners]
-            .width(Length::Fixed(card_width))
-            .height(Length::Fixed(card_height))
-            .into()
+    let card_content: Element<'a, Message> = if show_actions {
+        stack![
+            card_body,
+            container(app_action_buttons(index, is_favourite, is_pinned))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::Start)
+                .padding(0),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     } else {
         card_body.into()
     };

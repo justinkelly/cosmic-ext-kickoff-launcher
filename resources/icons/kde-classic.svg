@@ -1,0 +1,67 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 20010904//EN" "http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd">
+<!-- Created using Karbon, part of Calligra: http://www.calligra.org/karbon -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400pt" height="400pt">
+<defs>
+  <filter id="filter0" filterUnits="objectBoundingBox" primitiveUnits="objectBoundingBox" x="-0.10000000000" y="-0.10000000000" width="1.20000000000" height="1.20000000000">
+   <feGaussianBlur result="shadow" in="SourceAlpha" x="0.00000000000" y="0.00000000000" width="1.00000000000" height="1.00000000000" stdDeviation="0.0273523, 0.0299043"/>
+   <feMerge result="" x="0.00000000000" y="0.00000000000" width="1.00000000000" height="1.00000000000">
+    <feMergeNode in="shadow"/>
+    <feMergeNode in="shadow"/>
+    <feMergeNode in="shadow"/>
+    <feMergeNode in="SourceGraphic"/>
+   </feMerge>
+  </filter>
+  <linearGradient id="gradient0" gradientTransform="translate(-12, -73)" gradientUnits="objectBoundingBox" x1="0.02188183807" y1="0.02392344498" x2="0.65645514223" y2="0.95693779904" spreadMethod="pad">
+   <stop stop-color="#fffff2" offset="0.00000000000" stop-opacity="1.00000000000"/>
+   <stop stop-color="#fffff2" offset="0.40000000596" stop-opacity="1.00000000000"/>
+   <stop stop-color="#b1b3b2" offset="1.00000000000" stop-opacity="1.00000000000"/>
+  </linearGradient>
+  <linearGradient id="gradient1" gradientTransform="translate(-78, -89)" gradientUnits="objectBoundingBox" x1="0.30303030303" y1="0.30303030303" x2="0.90909090909" y2="1.21212121212" spreadMethod="pad">
+   <stop stop-color="#6e6e6e" offset="0.00000000000" stop-opacity="1.00000000000"/>
+   <stop stop-color="#373731" offset="1.00000000000" stop-opacity="1.00000000000"/>
+  </linearGradient>
+  <linearGradient id="gradient2" gradientTransform="translate(-85, -96)" gradientUnits="objectBoundingBox" x1="0.03164556962" y1="0.03164556962" x2="0.94936708861" y2="1.26582278481" spreadMethod="pad">
+   <stop stop-color="#fffff2" offset="0.00000000000" stop-opacity="1.00000000000"/>
+   <stop stop-color="#fffff2" offset="0.40000000596" stop-opacity="1.00000000000"/>
+   <stop stop-color="#b1b3b2" offset="1.00000000000" stop-opacity="1.00000000000"/>
+  </linearGradient>
+  <linearGradient id="gradient3" gradientTransform="translate(-108, -119)" gradientUnits="objectBoundingBox" x1="0.74074074074" y1="0.74074074074" x2="0.92592592593" y2="1.29629629630" spreadMethod="pad">
+   <stop stop-color="#545450" offset="0.00000000000" stop-opacity="1.00000000000"/>
+   <stop stop-color="#d9dade" offset="1.00000000000" stop-opacity="1.00000000000"/>
+  </linearGradient>
+  <linearGradient id="gradient4" gradientTransform="translate(-127, -149)" gradientUnits="objectBoundingBox" x1="0.41666666667" y1="1.66666666667" x2="1.04166666667" y2="1.45833333333" spreadMethod="pad">
+   <stop stop-color="#c5b7aa" offset="0.00000000000" stop-opacity="1.00000000000"/>
+   <stop stop-color="#fefdf9" offset="1.00000000000" stop-opacity="1.00000000000"/>
+  </linearGradient>
+  <radialGradient id="gradient5" gradientTransform="translate(-120, -131)" gradientUnits="objectBoundingBox" cx="0.69105691057" cy="0.65040650407" fx="0.00000000000" fy="0.00000000000" r="0.63237191813" spreadMethod="pad">
+   <stop stop-color="#fefef2" offset="0.00000000000" stop-opacity="1.00000000000"/>
+   <stop stop-color="#fefef2" offset="0.10000000149" stop-opacity="1.00000000000"/>
+   <stop stop-color="#fcfccd" offset="0.30000001192" stop-opacity="1.00000000000"/>
+   <stop stop-color="#fcd99a" offset="0.50000000000" stop-opacity="1.00000000000"/>
+   <stop stop-color="#e4b573" offset="0.60000002384" stop-opacity="1.00000000000"/>
+   <stop stop-color="#cb9e60" offset="0.75000000000" stop-opacity="1.00000000000"/>
+   <stop stop-color="#c19553" offset="1.00000000000" stop-opacity="1.00000000000"/>
+  </radialGradient>
+  <filter id="filter1" filterUnits="objectBoundingBox" primitiveUnits="objectBoundingBox" x="-0.10000000000" y="-0.10000000000" width="1.20000000000" height="1.20000000000">
+   <feGaussianBlur result="shadow" in="SourceAlpha" x="0.00000000000" y="0.00000000000" width="1.00000000000" height="1.00000000000" stdDeviation="0.0438596, 0.0353107"/>
+   <feMerge result="" x="0.00000000000" y="0.00000000000" width="1.00000000000" height="1.00000000000">
+    <feMergeNode in="shadow"/>
+    <feMergeNode in="shadow"/>
+    <feMergeNode in="shadow"/>
+    <feMergeNode in="SourceGraphic"/>
+   </feMerge>
+  </filter>
+ </defs>
+<g id="layer0">
+  <g id="gear" transform="translate(11.375, 72.4904)" fill="none" filter="url(#filter0)">
+   <path id="shape0" transform="translate(0.625, 0.509614)" fill="url(#gradient0)" d="M188 71L88 0L53 35L118 130L0 155L0 205L120 227L48 328L84 366L184 293L204 418L256 418L276 292L377 366L412 327L368 267L368 219L457 205L457 153L357 136Z"/>
+   <circle id="shape1" transform="translate(66.625, 16.5096)" r="132.00000000000pt" cx="132.00000000000pt" cy="132.00000000000pt" fill="url(#gradient1)"/>
+   <circle id="shape2" transform="translate(73.625, 23.5096)" r="126.40000000000pt" cx="126.40000000000pt" cy="126.40000000000pt" fill="url(#gradient2)"/>
+   <circle id="shape3" transform="translate(96.625, 46.5096)" r="108.00000000000pt" cx="108.00000000000pt" cy="108.00000000000pt" fill="url(#gradient3)"/>
+   <circle id="sphere-reflection" transform="translate(115.625, 76.5096)" r="96.00000000000pt" cx="96.00000000000pt" cy="96.00000000000pt" fill="url(#gradient4)"/>
+   <circle id="sphere" transform="translate(108.625, 58.5096)" r="98.40000000000pt" cx="98.40000000000pt" cy="98.40000000000pt" fill="url(#gradient5)"/>
+  </g>
+  <path id="k" transform="translate(197, 13)" fill="#ffffff" filter="url(#filter1)" d="M0 6L0 351L84 341L84 194L199 354L282 328L170 170L285 25L195 2L84 152L84 0Z"/>
+ </g>
+</svg>

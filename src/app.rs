@@ -28,7 +28,7 @@ pub const GRID_ICON_SIZE: u16 = 64;
 pub const LIST_ICON_SIZE: u16 = 48;
 pub const SIDEBAR_WIDTH: f32 = 240.0;
 pub const SETTINGS_PANEL_WIDTH: f32 = 280.0;
-pub const CORNER_BADGE_ICON_SIZE: u16 = 12;
+pub const CORNER_BADGE_ICON_SIZE: u16 = 16;
 pub static SEARCH_ID: LazyLock<cosmic::widget::Id> = LazyLock::new(cosmic::widget::Id::unique);
 pub static SCROLLABLE_ID: LazyLock<cosmic::widget::Id> = LazyLock::new(cosmic::widget::Id::unique);
 
@@ -109,7 +109,6 @@ pub enum Message {
     ToggleFavourite(usize),
     PinToTray(usize),
     UnpinFromTray(usize),
-    UnpinFromTrayById(String),
     PinnedBarHovered(String),
     PinnedBarUnhovered(String),
     SetDefaultCategory(String),
@@ -499,12 +498,6 @@ impl Application for Applet {
                 if self.hovered_pinned_id.as_deref() == Some(id.as_str()) {
                     self.hovered_pinned_id = None;
                 }
-                Task::none()
-            }
-            Message::UnpinFromTrayById(id) => {
-                self.pinned_apps = self.unpin_app_from_dock(&id);
-                self.cached_pinned_ids.borrow_mut().remove(&id);
-                self.hovered_pinned_id = None;
                 Task::none()
             }
             Message::LaunchApp(index) => {

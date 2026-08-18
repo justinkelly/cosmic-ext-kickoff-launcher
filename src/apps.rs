@@ -380,7 +380,13 @@ const CATEGORY_GROUPS: &[(&str, &str, &[&str])] = &[
             "WebDevelopment",
         ],
     ),
-    ("Education", "applications-education-symbolic", &["Education"]),
+    // These fallbacks are available in the COSMIC theme while the generic
+    // applications-education/internet icons are not.
+    (
+        "Education",
+        "accessories-dictionary-symbolic",
+        &["Education"],
+    ),
     (
         "Games",
         "applications-games-symbolic",
@@ -399,7 +405,7 @@ const CATEGORY_GROUPS: &[(&str, &str, &[&str])] = &[
     ),
     (
         "Internet",
-        "applications-internet-symbolic",
+        "network-wired-symbolic",
         &[
             "Network", "WebBrowser", "Email", "Chat", "IRCClient", "InstantMessaging",
             "Telephony", "VideoConference", "News", "P2P", "RemoteAccess",
@@ -500,7 +506,7 @@ pub fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<ApplicationCategor
         categories.push(ApplicationCategory {
             key: "Other".to_string(),
             display_name: fl!("cat-other"),
-            icon_name: "applications-other-symbolic".to_string(),
+            icon_name: "application-x-executable-symbolic".to_string(),
         });
     }
 

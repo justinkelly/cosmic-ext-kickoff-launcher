@@ -4,6 +4,12 @@
 //! icon theme (e.g. distro logos are missing from the COSMIC icon theme),
 //! plus name → handle resolution shared by the panel button and the
 //! settings dropdown.
+//!
+//! KDE and distribution artwork is sourced from KDE's official clipart and
+//! distribution-logo collections: <https://kde.org/stuff/clipart/> and
+//! <https://kde.org/content/distributions/logos/>. KDE Classic is retained as
+//! a clearly labelled historical option; KDE advises against using legacy
+//! marks for new KDE-related content.
 
 use cosmic::widget::icon::{self, Handle};
 use rust_embed::RustEmbed;
@@ -31,6 +37,12 @@ pub const BUNDLED_NAMES: &[&str] = &[
     "cosmic-logo",
     "system76-logo",
     "kde",
+    "kde-official",
+    "kde-oxygen",
+    "kde-plasma",
+    "kde-classic",
+    "kubuntu",
+    "kde-neon",
     "gnome-logo",
     "rust-logo",
 ];
@@ -41,15 +53,23 @@ pub const BUNDLED_NAMES: &[&str] = &[
 /// `monochrome` is set); everything else goes through the icon theme, with
 /// the handle's `symbolic` flag set for monochrome so the theme tints it.
 pub fn option_handle(name: &str, monochrome: bool) -> Handle {
+    // Keep existing configurations using `kde` working, while upgrading
+    // Keep existing configurations using `kde` working, while upgrading
+    // them to the current official KDE logo artwork.
+    let name = if name == "kde" { "kde-official" } else { name };
+
     if BUNDLED_NAMES.contains(&name) {
-        let file = if monochrome {
-            format!("{name}-mono.svg")
+        let color_file = format!("{name}.svg");
+        let asset = if monochrome {
+            BundledIcons::get(&format!("{name}-mono.svg"))
+                .map(|file| (file, true))
+                .or_else(|| BundledIcons::get(&color_file).map(|file| (file, false)))
         } else {
-            format!("{name}.svg")
+            BundledIcons::get(&color_file).map(|file| (file, false))
         };
-        if let Some(file) = BundledIcons::get(&file) {
+        if let Some((file, symbolic)) = asset {
             let mut handle = icon::from_svg_bytes(file.data);
-            handle.symbolic = monochrome;
+            handle.symbolic = symbolic;
             return handle;
         }
     }
