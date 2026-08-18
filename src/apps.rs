@@ -360,31 +360,96 @@ fn parse_section(content: &str, section_name: &str) -> HashMap<String, String> {
     map
 }
 
-/// Known category keys for desktop file Categories.
-pub const KNOWN_CATEGORY_KEYS: &[&str] = &[
-    "AudioVideo", "Audio", "Video",
-    "Development", "Education", "Game",
-    "Graphics", "Network", "Office",
-    "Science", "Settings", "System", "Utility",
-];
-
-/// Pre-built set for O(1) known-category lookups.
-static KNOWN_KEYS_SET: std::sync::LazyLock<std::collections::HashSet<&'static str>> =
-    std::sync::LazyLock::new(|| KNOWN_CATEGORY_KEYS.iter().copied().collect());
-
-/// Consolidated category groups mapping source keys → display group.
+/// Consolidated menu groups mapping freedesktop categories to one primary
+/// menu destination. Desktop files commonly contain several categories; the
+/// menu deliberately assigns each application to only one group to avoid
+/// duplicate entries. The order here is the tie-break priority.
 const CATEGORY_GROUPS: &[(&str, &str, &[&str])] = &[
-    ("Multimedia", "applications-multimedia-symbolic", &["AudioVideo", "Audio", "Video"]),
-    ("Development", "applications-engineering-symbolic", &["Development"]),
+    (
+        "Multimedia",
+        "applications-multimedia-symbolic",
+        &[
+            "AudioVideo", "Audio", "Video", "Player", "Music", "VideoPlayer", "Recorder",
+        ],
+    ),
+    (
+        "Development",
+        "applications-engineering-symbolic",
+        &[
+            "Development", "IDE", "Programming", "Debugger", "RevisionControl",
+            "WebDevelopment",
+        ],
+    ),
     ("Education", "applications-education-symbolic", &["Education"]),
-    ("Games", "applications-games-symbolic", &["Game"]),
-    ("Graphics", "applications-graphics-symbolic", &["Graphics"]),
-    ("Internet", "applications-internet-symbolic", &["Network"]),
-    ("Office", "applications-office-symbolic", &["Office"]),
-    ("Science", "applications-science-symbolic", &["Science"]),
-    ("Settings", "preferences-system-symbolic", &["Settings"]),
-    ("System", "applications-system-symbolic", &["System", "Utility"]),
+    (
+        "Games",
+        "applications-games-symbolic",
+        &[
+            "Game", "Amusement", "ArcadeGame", "BoardGame", "BlocksGame", "CardGame",
+            "RolePlaying", "Simulation", "SportsGame", "StrategyGame",
+        ],
+    ),
+    (
+        "Graphics",
+        "applications-graphics-symbolic",
+        &[
+            "Graphics", "2DGraphics", "3DGraphics", "RasterGraphics", "VectorGraphics",
+            "Photography", "Viewer",
+        ],
+    ),
+    (
+        "Internet",
+        "applications-internet-symbolic",
+        &[
+            "Network", "WebBrowser", "Email", "Chat", "IRCClient", "InstantMessaging",
+            "Telephony", "VideoConference", "News", "P2P", "RemoteAccess",
+        ],
+    ),
+    (
+        "Office",
+        "applications-office-symbolic",
+        &[
+            "Office", "Calendar", "ContactManagement", "WordProcessor", "Spreadsheet",
+            "Presentation", "Finance", "Database",
+        ],
+    ),
+    (
+        "Science",
+        "applications-science-symbolic",
+        &[
+            "Science", "Math", "Astronomy", "Biology", "Chemistry", "Engineering",
+            "Geoscience", "MedicalSoftware", "Physics",
+        ],
+    ),
+    (
+        "Settings",
+        "preferences-system-symbolic",
+        &["Settings", "DesktopSettings", "HardwareSettings", "PackageManager"],
+    ),
+    (
+        "System",
+        "applications-system-symbolic",
+        &[
+            "System", "Utility", "FileManager", "TerminalEmulator", "Monitor", "Security",
+            "Accessibility", "Core", "ConsoleOnly",
+        ],
+    ),
 ];
+
+/// Select one menu group for an application's complete Categories list.
+/// This follows the menu-spec idea of allocating entries to an ordered menu:
+/// additional toolkit/integration tags such as `GTK`, `Qt`, `KDE`, and
+/// `GNOME` do not create user-facing categories or force an app into Other.
+fn primary_category_key(categories: &[String]) -> Option<&'static str> {
+    CATEGORY_GROUPS
+        .iter()
+        .find(|(_, _, source_keys)| {
+            categories
+                .iter()
+                .any(|category| source_keys.contains(&category.as_str()))
+        })
+        .map(|(key, _, _)| *key)
+}
 
 /// Localized display name for a consolidated category group.
 fn group_display_name(key: &str) -> String {
@@ -405,23 +470,18 @@ fn group_display_name(key: &str) -> String {
 
 /// Derive categories from the loaded applications (consolidated groups).
 pub fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<ApplicationCategory> {
-    // Count apps per raw .desktop category key
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut counts = std::collections::HashMap::<&str, usize>::new();
     for app in apps {
-        for cat in &app.categories {
-            *counts.entry(cat.clone()).or_default() += 1;
+        if let Some(category) = primary_category_key(&app.categories) {
+            *counts.entry(category).or_default() += 1;
         }
     }
 
     let mut categories: Vec<ApplicationCategory> = Vec::new();
 
     // Build consolidated groups
-    for (group_key, icon_name, source_keys) in CATEGORY_GROUPS {
-        let total: usize = source_keys
-            .iter()
-            .map(|k| counts.get(*k).copied().unwrap_or(0))
-            .sum();
-        if total > 0 {
+    for (group_key, icon_name, _source_keys) in CATEGORY_GROUPS {
+        if counts.get(*group_key).copied().unwrap_or(0) > 0 {
             categories.push(ApplicationCategory {
                 key: (*group_key).to_string(),
                 display_name: group_display_name(group_key),
@@ -430,11 +490,12 @@ pub fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<ApplicationCategor
         }
     }
 
-    // "Other" category for apps with unrecognized categories or none
-    let has_other = apps.iter().any(|app| {
-        app.categories.is_empty()
-            || app.categories.iter().any(|c| !KNOWN_KEYS_SET.contains(c.as_str()))
-    });
+    // "Other" is now reserved for entries with no recognized semantic menu
+    // category at all, rather than entries that merely have extra toolkit or
+    // implementation categories.
+    let has_other = apps
+        .iter()
+        .any(|app| primary_category_key(&app.categories).is_none());
     if has_other {
         categories.push(ApplicationCategory {
             key: "Other".to_string(),
@@ -492,30 +553,13 @@ pub fn filter_apps_by_category(
 
     if category.key == "Other" {
         return apps.iter()
-            .filter(|app| {
-                app.categories.is_empty()
-                    || app.categories.iter().any(|c| !KNOWN_KEYS_SET.contains(c.as_str()))
-            })
-            .cloned()
-            .collect();
-    }
-
-    // Look up which raw .desktop keys map to this group
-    let source_keys: &[&str] = CATEGORY_GROUPS
-        .iter()
-        .find(|(key, _, _)| *key == category.key)
-        .map(|(_, _, keys)| *keys)
-        .unwrap_or(&[]);
-
-    if source_keys.is_empty() {
-        return apps.iter()
-            .filter(|app| app.categories.contains(&category.key))
+            .filter(|app| primary_category_key(&app.categories).is_none())
             .cloned()
             .collect();
     }
 
     apps.iter()
-        .filter(|app| app.categories.iter().any(|c| source_keys.contains(&c.as_str())))
+        .filter(|app| primary_category_key(&app.categories) == Some(category.key.as_str()))
         .cloned()
         .collect()
 }
@@ -528,4 +572,37 @@ pub fn filter_by_ids(
     ids.iter()
         .filter_map(|id| apps.iter().find(|a| a.id == *id).cloned())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::primary_category_key;
+
+    fn categories(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn assigns_each_app_to_one_primary_category() {
+        assert_eq!(
+            primary_category_key(&categories(&["GTK", "Network", "WebBrowser"])),
+            Some("Internet")
+        );
+        assert_eq!(
+            primary_category_key(&categories(&["Graphics", "Viewer", "Qt"])),
+            Some("Graphics")
+        );
+    }
+
+    #[test]
+    fn leaves_only_unclassified_apps_in_other() {
+        assert_eq!(
+            primary_category_key(&categories(&["GTK", "Qt", "KDE"])),
+            None
+        );
+        assert_eq!(
+            primary_category_key(&categories(&["FileManager", "System"])),
+            Some("System")
+        );
+    }
 }
