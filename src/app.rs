@@ -27,7 +27,7 @@ pub const COSMIC_SETTINGS_APP_ID: &str = "com.system76.CosmicSettings.desktop";
 pub const GRID_ICON_SIZE: u16 = 64;
 pub const LIST_ICON_SIZE: u16 = 48;
 pub const SIDEBAR_WIDTH: f32 = 240.0;
-pub const SETTINGS_PANEL_WIDTH: f32 = 280.0;
+pub const SETTINGS_PANEL_WIDTH: f32 = 320.0;
 pub const CORNER_BADGE_ICON_SIZE: u16 = 16;
 pub static SEARCH_ID: LazyLock<cosmic::widget::Id> = LazyLock::new(cosmic::widget::Id::unique);
 pub static SCROLLABLE_ID: LazyLock<cosmic::widget::Id> = LazyLock::new(cosmic::widget::Id::unique);
@@ -147,6 +147,10 @@ impl Application for Applet {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
+        // Resolve the small settings-panel icon previews off the UI thread so
+        // opening the panel never pays the icon-theme lookup cost.
+        view::warm_icon_option_handles();
+
         // Load config from cosmic-config, migrating the legacy TOML if needed.
         let (config_context, mut config) =
             match cosmic_config::Config::new(Self::APP_ID, AppletConfig::VERSION) {
@@ -573,7 +577,9 @@ impl Application for Applet {
                     self.custom_width_input.clear();
                     self.custom_height_input.clear();
                     self.save_config();
-                    self.reset_grid_scroll()
+                    // Resizing the popup does not invalidate the app list or
+                    // its scroll model; preserve the user's current position.
+                    Task::none()
                 }
             }
             Message::SetCustomWidth(value) => {
@@ -606,7 +612,8 @@ impl Application for Applet {
                     self.save_config();
                     // The view rebuilds with the new popup size, which the
                     // popup's autosize limits propagate to the compositor.
-                    self.reset_grid_scroll()
+                    // Keep the current scroll position while it resizes.
+                    Task::none()
                 } else {
                     Task::none()
                 }

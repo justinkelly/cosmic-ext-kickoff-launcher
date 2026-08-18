@@ -27,6 +27,8 @@ cat-system = System
 cat-other = Other
 
 # Settings panel
+settings-title = Settings
+close = Close
 appearance = Appearance
 layout-mode = Layout
 menu-size = Menu Size
