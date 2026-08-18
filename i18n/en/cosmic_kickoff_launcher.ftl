@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
-app-title = KDE Launcher for Cosmic
+app-title = Kickoff Launcher for COSMIC
 app-comment = A KDE-style application menu
-app-keywords = KDE;Menu;Launcher
+app-keywords = COSMIC;Kickoff;Menu;Launcher
 
 search-placeholder = Type to search…
 no-applications = No applications found.
@@ -44,9 +44,9 @@ default-menu = Default Menu
 default-category = Default Category
 
 # Layout modes
-grid-view = Grid View
-list-view = List View
-hybrid-view = Hybrid View
+grid-view = Grid
+list-view = List
+hybrid-view = Hybrid
 
 # Size presets
 size-small = Small

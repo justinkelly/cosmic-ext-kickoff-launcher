@@ -965,7 +965,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cosmic-kde-launcher"
+name = "cosmic-kickoff-launcher"
 version = "0.1.0"
 dependencies = [
  "i18n-embed",

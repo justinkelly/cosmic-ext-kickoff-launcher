@@ -17,13 +17,65 @@ use cosmic::iced::{
 };
 use cosmic::theme;
 use cosmic::widget::{
-    button, dropdown, icon, mouse_area, nav_bar, nav_bar_toggle, search_input, segmented_button,
-    settings, text_input, tooltip,
+    button, dropdown, icon, mouse_area, nav_bar, nav_bar_toggle, search_input, settings,
+    text_input, tooltip,
 };
 use cosmic::Element;
 use apps::ApplicationEntry;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+/// Panel-icon options for the settings dropdown: (icon name, display label).
+///
+/// Names in [`crate::icons::BUNDLED_NAMES`] resolve from SVG assets embedded
+/// in the binary (so they render on any icon theme, e.g. the distro logos
+/// which the COSMIC icon theme lacks). All other names must exist in the
+/// installed icon theme — the previous list contained theme-only icons that
+/// rendered blank on the COSMIC theme and were removed.
+const ICON_OPTIONS: &[(&str, &str)] = &[
+    ("com.system76.CosmicAppLibrary", "COSMIC App Library"),
+    ("cosmic-logo", "COSMIC"),
+    ("system76-logo", "System76"),
+    ("kde", "KDE"),
+    ("gnome-logo", "GNOME"),
+    ("application-menu-symbolic", "App Menu"),
+    ("open-menu-symbolic", "Menu"),
+    ("start-here-symbolic", "Start"),
+    ("distributor-logo-debian", "Debian"),
+    ("start-here-ubuntu", "Ubuntu"),
+    ("distributor-logo-archlinux", "Arch Linux"),
+    ("start-here-fedora", "Fedora"),
+    ("distributor-logo-pop-os", "Pop!_OS"),
+    ("distributor-logo-manjaro", "Manjaro"),
+    ("distributor-logo-opensuse", "openSUSE"),
+    ("distributor-logo-linux-mint", "Linux Mint"),
+    ("rust-logo", "Rust"),
+    ("applications-system-symbolic", "System"),
+    ("applications-engineering-symbolic", "Dev"),
+    ("applications-games-symbolic", "Games"),
+    ("applications-graphics-symbolic", "Graphics"),
+    ("applications-multimedia-symbolic", "Media"),
+    ("applications-office-symbolic", "Office"),
+    ("applications-science-symbolic", "Science"),
+    ("applications-utilities-symbolic", "Utils"),
+    ("computer-symbolic", "Computer"),
+    ("system-run-symbolic", "Run"),
+    ("system-search-symbolic", "Search"),
+    ("preferences-system-symbolic", "Settings"),
+    ("emblem-system-symbolic", "System"),
+];
+
+/// Display labels for [`ICON_OPTIONS`], computed once.
+static ICON_OPTION_LABELS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    ICON_OPTIONS.iter().map(|(_, label)| (*label).to_string()).collect()
+});
+
+/// Preset labels never change during the lifetime of the applet. Keeping
+/// these borrowed avoids rebuilding and cloning the dropdown model on every
+/// pointer or keyboard event in the settings panel.
+static SIZE_PRESET_LABELS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    SizePreset::ALL.iter().map(|preset| size_preset_label(*preset)).collect()
+});
 
 /// Estimated height of bottom-bar button content (icon/text line).
 const BOTTOM_BAR_CONTENT_HEIGHT: f32 = 21.0;
@@ -210,7 +262,15 @@ impl Applet {
         // Grid view uses the larger package-card icon size (matching cosmic-store).
         let effective_icon_size: f32 = f32::from(GRID_ICON_SIZE);
 
-        let app_area: Element<'_, Message> = if self.available_applications.is_empty() {
+        let app_area: Element<'_, Message> = if self.show_settings {
+            // The settings panel is the active surface. Do not rebuild and
+            // retain dozens of application cards/icons behind it on every
+            // dropdown interaction.
+            Space::new()
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else if self.available_applications.is_empty() {
             container(cosmic::widget::text::body(fl!("no-applications")))
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
@@ -495,34 +555,54 @@ impl Applet {
 
         // ── Settings panel (right side) ──
         let settings_panel: Option<Element<'_, Message>> = if self.show_settings {
-            // Layout mode (segmented control)
-            let layout_segment: Element<'_, Message> =
-                segmented_button::horizontal(&self.layout_model)
-                    .on_activate(Message::LayoutActivated)
-                    .into();
+            // Layout mode (radio group — one of Grid/List/Hybrid)
+            let layout_radios: Element<'_, Message> = {
+                let selected = self.config.layout_mode;
+                let choice = |mode: LayoutMode, label: String| {
+                    cosmic::widget::radio(
+                        cosmic::widget::text::body(label),
+                        mode,
+                        Some(selected),
+                        Message::LayoutMode,
+                    )
+                };
+                row![
+                    choice(LayoutMode::Grid, fl!("grid-view")),
+                    choice(LayoutMode::List, fl!("list-view")),
+                    choice(LayoutMode::Hybrid, fl!("hybrid-view")),
+                ]
+                .spacing(space_m)
+                .align_y(Alignment::Center)
+                .into()
+            };
 
             // Menu size preset (dropdown)
-            let size_labels: Vec<String> = SizePreset::ALL
-                .iter()
-                .map(|preset| {
-                    if *preset == SizePreset::Custom
-                        && self.config.custom_width > 0.0
-                        && self.config.custom_height > 0.0
-                    {
-                        fl!(
-                            "size-preset",
-                            preset = fl!("size-custom"),
-                            width = (self.config.custom_width as u32).to_string(),
-                            height = (self.config.custom_height as u32).to_string()
-                        )
-                    } else {
-                        size_preset_label(*preset)
-                    }
-                })
-                .collect();
-            let selected_size = SizePreset::ALL
-                .iter()
-                .position(|preset| *preset == self.config.size_preset);
+            let size_labels = if self.config.custom_width > 0.0
+                && self.config.custom_height > 0.0
+            {
+                let mut labels = SIZE_PRESET_LABELS.clone();
+                labels[SizePreset::ALL.len() - 1] = fl!(
+                    "size-preset",
+                    preset = fl!("size-custom"),
+                    width = (self.config.custom_width as u32).to_string(),
+                    height = (self.config.custom_height as u32).to_string()
+                );
+                std::borrow::Cow::Owned(labels)
+            } else {
+                std::borrow::Cow::Borrowed(SIZE_PRESET_LABELS.as_slice())
+            };
+            // The dropdown shows "Custom" while the custom size is being
+            // edited, even though the config preset is unchanged until Apply.
+            let selected_size = {
+                let preset = if self.custom_size_selected {
+                    SizePreset::Custom
+                } else {
+                    self.config.size_preset
+                };
+                SizePreset::ALL
+                    .iter()
+                    .position(|candidate| *candidate == preset)
+            };
             let size_picker: Element<'_, Message> =
                 dropdown(size_labels, selected_size, move |idx| {
                     Message::SetSizePreset(SizePreset::ALL[idx])
@@ -531,11 +611,11 @@ impl Applet {
                 .padding([space_xxs, space_xxs])
                 .into();
 
-            // Custom size inputs (only when the Custom preset is active).
-            // Two fill-width inputs with a full-width Apply button below —
-            // kept compact so everything fits in the settings panel.
+            // Custom size inputs — shown while "Custom" is being edited
+            // (selected but not applied, or already applied).
             let custom_size_row: Option<Element<'_, Message>> =
-                (self.config.size_preset == SizePreset::Custom).then(|| {
+                (self.custom_size_selected || self.config.size_preset == SizePreset::Custom)
+                    .then(|| {
                     column![
                         row![
                             text_input(fl!("width-px"), &self.custom_width_input)
@@ -560,72 +640,24 @@ impl Applet {
                 });
 
             // Panel icon dropdown
-            const ICON_OPTIONS: &[(&str, &str)] = &[
-                ("com.system76.CosmicAppLibrary", "COSMIC"),
-                ("application-menu-symbolic", "App Menu"),
-                ("open-menu-symbolic", "Menu"),
-                ("start-here-symbolic", "Start"),
-                ("distributor-logo", "Linux"),
-                ("applications-all-symbolic", "All Apps"),
-                ("kde", "KDE"),
-                ("plasma", "Plasma"),
-                ("kmenu", "K Menu"),
-                ("gnome-main-menu", "GNOME"),
-                ("distributor-logo-pop-os", "Pop!_OS"),
-                ("start-here-ubuntu", "Ubuntu"),
-                ("start-here-kubuntu", "Kubuntu"),
-                ("start-here-lubuntu", "Lubuntu"),
-                ("start-here-xubuntu", "Xubuntu"),
-                ("start-here-ubuntu-mate", "Ubuntu MATE"),
-                ("start-here-ubuntu-gnome", "Ubuntu GNOME"),
-                ("start-here-fedora", "Fedora"),
-                ("distributor-logo-debian", "Debian"),
-                ("distributor-logo-archlinux", "Arch"),
-                ("distributor-logo-manjaro", "Manjaro"),
-                ("distributor-logo-opensuse", "openSUSE"),
-                ("distributor-logo-solus", "Solus"),
-                ("distributor-logo-elementary", "elementary"),
-                ("distributor-logo-linux-mint", "Mint"),
-                ("distributor-logo-slackware", "Slackware"),
-                ("distributor-logo-mageia", "Mageia"),
-                ("applications-system-symbolic", "System"),
-                ("applications-engineering-symbolic", "Dev"),
-                ("applications-games-symbolic", "Games"),
-                ("applications-graphics-symbolic", "Graphics"),
-                ("applications-multimedia-symbolic", "Media"),
-                ("applications-office-symbolic", "Office"),
-                ("applications-science-symbolic", "Science"),
-                ("applications-utilities-symbolic", "Utils"),
-                ("computer-symbolic", "Computer"),
-                ("system-run-symbolic", "Run"),
-                ("system-search-symbolic", "Search"),
-                ("preferences-system-symbolic", "Settings"),
-                ("emblem-system-symbolic", "System"),
-            ];
             let current_icon = if self.config.panel_icon.is_empty() {
-                "com.system76.CosmicAppLibrary"
+                "cosmic-logo"
             } else {
                 &self.config.panel_icon
             };
-            let labels: Vec<String> = ICON_OPTIONS.iter().map(|(_, l)| (*l).to_string()).collect();
-            let icons: Vec<icon::Handle> = ICON_OPTIONS
-                .iter()
-                .map(|(name, _)| {
-                    icon::from_name(*name)
-                        .symbolic(false)
-                        .prefer_svg(true)
-                        .size(24)
-                        .handle()
-                })
-                .collect();
             let selected_idx = ICON_OPTIONS
                 .iter()
                 .position(|(name, _)| *name == current_icon);
-            let picker: Element<'_, Message> = dropdown(labels, selected_idx, move |idx: usize| {
+            // Keep this text-only. Rendering every SVG preview in the popup
+            // makes opening the panel-icon selector noticeably expensive.
+            let picker: Element<'_, Message> = dropdown(
+                ICON_OPTION_LABELS.as_slice(),
+                selected_idx,
+                move |idx: usize| {
                 let icon_name = ICON_OPTIONS[idx].0.to_string();
                 Message::SetPanelIcon(icon_name)
-            })
-            .icons(icons.into())
+                },
+            )
             .width(Length::Fill)
             .padding([space_xxs, space_s])
             .into();
@@ -657,22 +689,32 @@ impl Applet {
                     .into();
 
             // Default category dropdown
-            let default_labels = vec![fl!("all-applications"), fl!("favourites"), fl!("recents")];
-            let default_selected = Some(match self.config.default_category.as_str() {
-                "favourites" => 1,
-                "recents" => 2,
-                _ => 0,
-            });
+            // Default category dropdown — mirrors the sidebar nav: All
+            // Applications, Favourites/Recents (when shown in the sidebar)
+            // and every app category.
+            let mut default_keys: Vec<String> = Vec::new();
+            let mut default_labels: Vec<String> = Vec::new();
+            default_keys.push("all".to_string());
+            default_labels.push(fl!("all-applications"));
+            if self.config.show_favourites && !self.config.favourites.is_empty() {
+                default_keys.push("favourites".to_string());
+                default_labels.push(fl!("favourites"));
+            }
+            if self.config.show_recents && !self.config.recents.is_empty() {
+                default_keys.push("recents".to_string());
+                default_labels.push(fl!("recents"));
+            }
+            for cat in &self.available_categories {
+                default_keys.push(cat.key.clone());
+                default_labels.push(cat.display_name.clone());
+            }
+            let default_selected = default_keys
+                .iter()
+                .position(|key| *key == self.config.default_category);
             let default_picker: Element<'_, Message> = dropdown(
                 default_labels,
                 default_selected,
-                |idx| {
-                    Message::SetDefaultCategory(match idx {
-                        1 => "favourites".into(),
-                        2 => "recents".into(),
-                        _ => "all".into(),
-                    })
-                },
+                move |idx| Message::SetDefaultCategory(default_keys[idx].clone()),
             )
             .width(Length::Fill)
             .into();
@@ -680,12 +722,17 @@ impl Applet {
             let content = column![
                 settings::section()
                     .title(fl!("appearance"))
-                    .add(settings::item(fl!("layout-mode"), layout_segment))
-                    .add(settings::item(fl!("menu-size"), size_picker))
+                    .add(stacked_item(
+                        fl!("layout-mode"),
+                        layout_radios,
+                        space_xxs
+                    ))
+                    .add(stacked_item(fl!("menu-size"), size_picker, space_xxs))
                     .add_maybe(
-                        custom_size_row.map(|row| settings::item(fl!("custom-size"), row))
+                        custom_size_row
+                            .map(|row| stacked_item(fl!("custom-size"), row, space_xxs))
                     )
-                    .add(settings::item(fl!("panel-icon"), picker))
+                    .add(stacked_item(fl!("panel-icon"), picker, space_xxs))
                     .add(settings::item(fl!("monochrome-icon"), monochrome_toggle)),
                 settings::section()
                     .title(fl!("sidebar"))
@@ -701,7 +748,11 @@ impl Applet {
                     .add(settings::item(fl!("show-power-actions"), show_power_toggle)),
                 settings::section()
                     .title(fl!("default-menu"))
-                    .add(settings::item(fl!("default-category"), default_picker)),
+                    .add(stacked_item(
+                        fl!("default-category"),
+                        default_picker,
+                        space_xxs
+                    )),
             ]
             .spacing(space_s);
 
@@ -884,6 +935,23 @@ impl Applet {
                 .into()
         }
     }
+}
+
+/// A settings item with the label above the control, so dropdowns and
+/// segmented controls get the full panel width instead of being squashed
+/// into the narrow space beside the label.
+fn stacked_item<'a>(
+    title: impl Into<Cow<'a, str>> + 'a,
+    widget: impl Into<Element<'a, Message>>,
+    spacing: u16,
+) -> Element<'a, Message> {
+    column![
+        cosmic::widget::text::body(title),
+        widget.into(),
+    ]
+    .spacing(spacing)
+    .width(Length::Fill)
+    .into()
 }
 
 /// Localized label for a size preset, including dimensions.

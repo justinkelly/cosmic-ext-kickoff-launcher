@@ -20,7 +20,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
-pub const APP_ID: &str = "com.github.cosmic-kde-launcher";
+pub const APP_ID: &str = "com.github.cosmic-kickoff-launcher";
+const LEGACY_APP_ID: &str = "com.github.cosmic-kde-launcher";
 pub const COSMIC_FILES_APP_ID: &str = "com.system76.CosmicFiles.desktop";
 pub const COSMIC_SETTINGS_APP_ID: &str = "com.system76.CosmicSettings.desktop";
 pub const GRID_ICON_SIZE: u16 = 64;
@@ -48,10 +49,11 @@ pub struct Applet {
     pub(crate) config: AppletConfig,
     pub(crate) custom_width_input: String,
     pub(crate) custom_height_input: String,
+    /// True when "Custom" is picked in the size dropdown but not yet applied;
+    /// the menu keeps its current size until Apply is pressed.
+    pub(crate) custom_size_selected: bool,
     pub(crate) selected_index: Option<usize>,
     pub(crate) nav_model: segmented_button::SingleSelectModel,
-    /// Layout-mode control in the settings panel.
-    pub(crate) layout_model: segmented_button::SingleSelectModel,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) show_settings: bool,
     /// App index currently under the pointer (for hover action icons).
@@ -65,11 +67,16 @@ pub struct Applet {
     /// Height (px) of the app-grid viewport, from the scrollable's viewport.
     pub(crate) grid_viewport_h: f32,
     pub(crate) icon_cache: RefCell<HashMap<(String, u16), cosmic::widget::icon::Icon>>,
+    pub(crate) panel_icon_cache:
+        RefCell<Option<(String, bool, cosmic::widget::icon::Handle)>>,
     pub(crate) cached_fav_ids: RefCell<HashSet<String>>,
     pub(crate) cached_pinned_ids: RefCell<HashSet<String>>,
     /// Set of .desktop file basenames known at last scan — used to detect
     /// new/removed apps without a full re-parse.
     pub(crate) known_desktop_ids: HashSet<String>,
+    /// Prevents the periodic watcher from starting duplicate rescans while a
+    /// previous blocking scan is still running.
+    pub(crate) app_refresh_in_progress: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +92,7 @@ pub enum Message {
     SelectNext,
     SelectPrevious,
     LaunchSelected,
-    LayoutActivated(segmented_button::Entity),
+    LayoutMode(LayoutMode),
     ToggleSidebar,
     ToggleSettings,
     SetSizePreset(SizePreset),
@@ -150,6 +157,18 @@ impl Application for Applet {
                         Err((_errors, config)) => config,
                     };
                     if config == AppletConfig::default() {
+                        // Preserve settings from the previous app ID when
+                        // upgrading an existing installation.
+                        if let Ok(legacy_context) =
+                            cosmic_config::Config::new(LEGACY_APP_ID, AppletConfig::VERSION)
+                        {
+                            if let Ok(legacy) = AppletConfig::get_entry(&legacy_context) {
+                                config = legacy;
+                                let _ = config.write_entry(&context);
+                            }
+                        }
+                    }
+                    if config == AppletConfig::default() {
                         if let Some(legacy) = AppletConfig::migrate_legacy(&context) {
                             config = legacy;
                         }
@@ -183,9 +202,10 @@ impl Application for Applet {
             config_context,
             config,
             custom_width_input: String::new(),
-            custom_height_input: String::new(),            selected_index: None,
+            custom_height_input: String::new(),
+            custom_size_selected: false,
+            selected_index: None,
             nav_model: segmented_button::SingleSelectModel::default(),
-            layout_model: Self::build_layout_model(),
             sidebar_collapsed: false,
             show_settings: false,
             hovered_app_index: None,
@@ -194,9 +214,11 @@ impl Application for Applet {
             grid_scroll_y: 0.0,
             grid_viewport_h: 0.0,
             icon_cache: RefCell::new(HashMap::new()),
+            panel_icon_cache: RefCell::new(None),
             cached_fav_ids: RefCell::new(HashSet::new()),
             cached_pinned_ids: RefCell::new(HashSet::new()),
             known_desktop_ids: apps::list_desktop_ids(),
+            app_refresh_in_progress: false,
         };
         applet.sidebar_collapsed = applet.config.sidebar_collapsed;
         // Prefill the custom-size inputs when the Custom preset is active.
@@ -210,16 +232,6 @@ impl Application for Applet {
         for id in &applet.config.favourites {
             applet.cached_fav_ids.borrow_mut().insert(id.clone());
         }
-        // Activate the configured layout mode in the settings control.
-        let active_entity = applet.layout_model.iter().find(|&entity| {
-            applet
-                .layout_model
-                .data::<LayoutMode>(entity)
-                .is_some_and(|mode| *mode == applet.config.layout_mode)
-        });
-        if let Some(entity) = active_entity {
-            applet.layout_model.activate(entity);
-        }
         applet.rebuild_nav_model();
 
         (applet, Task::none())
@@ -231,20 +243,32 @@ impl Application for Applet {
             return self.build_menu_view(false);
         }
         let icon_name: &str = if self.config.panel_icon.is_empty() {
-            "com.system76.CosmicAppLibrary"
+            "cosmic-logo"
         } else {
             &self.config.panel_icon
         };
-        // Use icon_button_from_handle with configurable symbolic/coloured.
-        let suggested = self.core.applet.suggested_size(true);
+        // Use the full-colour icon size for both variants: libcosmic's
+        // `icon_button_from_handle` sizes symbolic icons down (panel
+        // convention), which made the monochrome icon look smaller than
+        // the coloured one.
+        let suggested = self.core.applet.suggested_size(false);
+        let icon_size = suggested.0.min(suggested.1).saturating_sub(6);
+        let symbolic = self.config.panel_icon_symbolic;
+        let icon: Element<'_, Message> = cosmic::widget::icon(self.cached_panel_icon(icon_name, symbolic))
+        .size(icon_size)
+        .class(if symbolic {
+            cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
+                cosmic::iced::widget::svg::Style {
+                    color: Some(theme.cosmic().background(theme.transparent).on.into()),
+                }
+            }))
+        } else {
+            cosmic::theme::Svg::default()
+        })
+        .into();
         self.core
             .applet
-            .icon_button_from_handle(
-                cosmic::widget::icon::from_name(icon_name)
-                    .symbolic(self.config.panel_icon_symbolic)
-                    .size(suggested.0)
-                    .into(),
-            )
+            .button_from_element(icon, false)
             .on_press(Message::TogglePopup)
             .into()
     }
@@ -274,11 +298,23 @@ impl Application for Applet {
                 // Apps are kept up to date by the periodic RefreshApps subscription.
                 self.available_applications = self.all_applications.clone();
 
-                // Apply default category from config
+                // Apply default category from config — resolve the stored key
+                // against the categories actually shown in the sidebar.
                 self.selected_category = Some(match self.config.default_category.as_str() {
-                    "favourites" => ApplicationCategory::favourites(),
-                    "recents" => ApplicationCategory::recents(),
-                    _ => ApplicationCategory::all(),
+                    "favourites"
+                        if self.config.show_favourites && !self.config.favourites.is_empty() =>
+                    {
+                        ApplicationCategory::favourites()
+                    }
+                    "recents" if self.config.show_recents && !self.config.recents.is_empty() => {
+                        ApplicationCategory::recents()
+                    }
+                    key => self
+                        .available_categories
+                        .iter()
+                        .find(|cat| cat.key == key)
+                        .cloned()
+                        .unwrap_or_else(ApplicationCategory::all),
                 });
                 self.apply_category_filter();
                 self.rebuild_nav_model();
@@ -334,7 +370,7 @@ impl Application for Applet {
                 // process so the menu opens as a real window on the actual
                 // compositor, then close the popup.
                 let exe = std::env::current_exe()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("cosmic-kde-launcher"));
+                    .unwrap_or_else(|_| std::path::PathBuf::from("cosmic-kickoff-launcher"));
                 if let Err(err) = std::process::Command::new(exe).arg("--window").spawn() {
                     tracing::warn!("Failed to launch menu window: {err}");
                 }
@@ -506,13 +542,10 @@ impl Application for Applet {
                 }
                 Task::none()
             }
-            Message::LayoutActivated(entity) => {
-                if let Some(mode) = self.layout_model.data::<LayoutMode>(entity) {
-                    self.config.layout_mode = *mode;
-                    self.save_config();
-                }
-                self.layout_model.activate(entity);
-                Task::none()
+            Message::LayoutMode(mode) => {
+                self.config.layout_mode = mode;
+                self.save_config();
+                self.reset_grid_scroll()
             }
             Message::ToggleSidebar => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
@@ -525,8 +558,10 @@ impl Application for Applet {
                 Task::none()
             }
             Message::SetSizePreset(preset) => {
-                self.config.size_preset = preset;
                 if preset == SizePreset::Custom {
+                    // Show the custom-size inputs without changing the menu
+                    // size yet — the size changes only when Apply is pressed.
+                    self.custom_size_selected = true;
                     // Prefill with the last applied custom values, if any.
                     if self.config.custom_width > 0.0 && self.custom_width_input.is_empty() {
                         self.custom_width_input = self.config.custom_width.to_string();
@@ -534,16 +569,19 @@ impl Application for Applet {
                     if self.config.custom_height > 0.0 && self.custom_height_input.is_empty() {
                         self.custom_height_input = self.config.custom_height.to_string();
                     }
+                    Task::none()
                 } else {
-                    // Non-custom presets ignore custom dimensions — clear them
-                    // so the preset's own size takes effect.
+                    // Non-custom presets apply immediately and ignore custom
+                    // dimensions — clear them so the preset's own size wins.
+                    self.custom_size_selected = false;
+                    self.config.size_preset = preset;
                     self.config.custom_width = 0.0;
                     self.config.custom_height = 0.0;
                     self.custom_width_input.clear();
                     self.custom_height_input.clear();
+                    self.save_config();
+                    self.reset_grid_scroll()
                 }
-                self.save_config();
-                self.reset_grid_scroll()
             }
             Message::SetCustomWidth(value) => {
                 self.custom_width_input = value;
@@ -570,6 +608,7 @@ impl Application for Applet {
                     applied = true;
                 }
                 if applied {
+                    self.custom_size_selected = false;
                     self.config.size_preset = SizePreset::Custom;
                     self.save_config();
                     // The view rebuilds with the new popup size, which the
@@ -693,11 +732,15 @@ impl Application for Applet {
             }
             Message::PowerActionDone => Task::none(),
             Message::RefreshApps => {
+                if self.app_refresh_in_progress {
+                    return Task::none();
+                }
                 let current = apps::list_desktop_ids();
                 if current == self.known_desktop_ids {
                     return Task::none();
                 }
                 // Desktop files changed — reload in background, then update state.
+                self.app_refresh_in_progress = true;
                 return Task::future(async move {
                     let (apps, categories) = match tokio::task::spawn_blocking(|| {
                         let a = apps::load_apps();
@@ -715,8 +758,12 @@ impl Application for Applet {
                     cosmic::action::app(Message::AppsRefreshed(apps, categories))
                 });
             }
-            Message::RefreshAppsFailed => Task::none(),
+            Message::RefreshAppsFailed => {
+                self.app_refresh_in_progress = false;
+                Task::none()
+            }
             Message::AppsRefreshed(apps, categories) => {
+                self.app_refresh_in_progress = false;
                 self.all_applications = apps;
                 self.available_categories = categories;
                 self.known_desktop_ids = apps::list_desktop_ids();
@@ -734,7 +781,14 @@ impl Application for Applet {
                 Task::none()
             }
             Message::UpdateConfig(config) => {
+                let mut config = config;
+                config.sanitize();
+                self.sidebar_collapsed = config.sidebar_collapsed;
                 self.config = config;
+                if self.config.size_preset == SizePreset::Custom {
+                    self.custom_width_input = self.config.custom_width.to_string();
+                    self.custom_height_input = self.config.custom_height.to_string();
+                }
                 self.rebuild_nav_model();
                 if self.popup.is_some() {
                     self.apply_category_filter();
@@ -922,33 +976,21 @@ impl Applet {
         icon
     }
 
-    fn build_layout_model() -> segmented_button::SingleSelectModel {
-        let mut model = segmented_button::SingleSelectModel::default();
-
-        let icon = |name: &'static str| {
-            cosmic::widget::icon::from_name(name)
-                .symbolic(true)
-                .size(16)
-                .icon()
-        };
-
-        model
-            .insert()
-            .text(fl!("grid-view"))
-            .icon(icon("view-grid-symbolic"))
-            .data(LayoutMode::Grid);
-        model
-            .insert()
-            .text(fl!("list-view"))
-            .icon(icon("view-list-symbolic"))
-            .data(LayoutMode::List);
-        model
-            .insert()
-            .text(fl!("hybrid-view"))
-            .icon(icon("view-grid-symbolic"))
-            .data(LayoutMode::Hybrid);
-
-        model
+    pub(crate) fn cached_panel_icon(
+        &self,
+        name: &str,
+        symbolic: bool,
+    ) -> cosmic::widget::icon::Handle {
+        let mut cache = self.panel_icon_cache.borrow_mut();
+        if let Some((cached_name, cached_symbolic, handle)) = cache.as_ref()
+            && cached_name == name
+            && *cached_symbolic == symbolic
+        {
+            return handle.clone();
+        }
+        let handle = crate::icons::option_handle(name, symbolic);
+        *cache = Some((name.to_string(), symbolic, handle.clone()));
+        handle
     }
 
     pub(crate) fn rebuild_nav_model(&mut self) {

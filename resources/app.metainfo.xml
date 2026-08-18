@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.github.cosmic-kde-launcher</id>
+  <id>com.github.cosmic-kickoff-launcher</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
-  <name>KDE Launcher for Cosmic</name>
+  <name>Kickoff Launcher for COSMIC</name>
   <summary>A KDE-style application menu</summary>
-  <launchable type="desktop-id">com.github.cosmic-kde-launcher.desktop</launchable>
+  <launchable type="desktop-id">com.github.cosmic-kickoff-launcher.desktop</launchable>
   <provides>
     <id>com.system76.CosmicApplet</id>
     <binaries>
-      <binary>cosmic-kde-launcher</binary>
+      <binary>cosmic-kickoff-launcher</binary>
     </binaries>
   </provides>
   <requires>

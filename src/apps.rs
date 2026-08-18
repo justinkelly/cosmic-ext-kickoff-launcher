@@ -74,10 +74,29 @@ impl ApplicationCategory {
 pub fn get_data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
+    let push = |dirs: &mut Vec<PathBuf>, path: PathBuf| {
+        if !dirs.iter().any(|existing| existing == &path) {
+            dirs.push(path);
+        }
+    };
+
+    // Process from lowest to highest priority. `load_apps` keeps the last
+    // entry for a duplicate desktop ID, so this order follows the XDG rule
+    // that earlier data directories have higher priority.
+    push(
+        &mut dirs,
+        PathBuf::from("/var/lib/snapd/desktop/applications"),
+    );
+    push(
+        &mut dirs,
+        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
+    );
+
     // XDG_DATA_DIRS (colon-separated). The first entry has the highest
     // preference per the XDG spec, so we reverse them: lowest-priority
     // entries first so higher-priority ones (processed later) win during
     // deduplication.
+    let mut has_xdg_data_dirs = false;
     if let Ok(data_dirs) = std::env::var("XDG_DATA_DIRS") {
         let mut entries: Vec<PathBuf> = data_dirs
             .split(':')
@@ -86,30 +105,35 @@ pub fn get_data_dirs() -> Vec<PathBuf> {
             .map(|d| PathBuf::from(d).join("applications"))
             .collect();
         entries.reverse();
-        dirs.append(&mut entries);
+        for entry in entries {
+            push(&mut dirs, entry);
+        }
+        has_xdg_data_dirs = !data_dirs.trim().is_empty();
     }
 
     // Fallback defaults if XDG_DATA_DIRS is empty
-    if dirs.is_empty() {
-        dirs.push(PathBuf::from("/usr/share/applications"));
-        dirs.push(PathBuf::from("/usr/local/share/applications"));
+    if !has_xdg_data_dirs {
+        push(&mut dirs, PathBuf::from("/usr/share/applications"));
+        push(&mut dirs, PathBuf::from("/usr/local/share/applications"));
     }
 
-    // Flatpak applications (system) — lower priority than local packages
-    dirs.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
-    // Flatpak applications (user)
+    // Flatpak applications (user) — lower priority than per-user native
+    // desktop files, but higher than system-wide entries.
     if let Ok(home) = std::env::var("HOME") {
-        dirs.push(PathBuf::from(&home).join(".local/share/flatpak/exports/share/applications"));
+        push(
+            &mut dirs,
+            PathBuf::from(&home).join(".local/share/flatpak/exports/share/applications"),
+        );
     }
-
-    // Snap applications — lowest priority
-    dirs.push(PathBuf::from("/var/lib/snapd/desktop/applications"));
 
     // XDG_DATA_HOME (or ~/.local/share) — HIGHEST priority, appended last
     if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
-        dirs.push(PathBuf::from(data_home).join("applications"));
+        push(&mut dirs, PathBuf::from(data_home).join("applications"));
     } else if let Ok(home) = std::env::var("HOME") {
-        dirs.push(PathBuf::from(home).join(".local/share/applications"));
+        push(
+            &mut dirs,
+            PathBuf::from(home).join(".local/share/applications"),
+        );
     }
 
     tracing::debug!("Searching for .desktop files in: {:?}", dirs);
@@ -193,13 +217,11 @@ fn parse_desktop_file(
     let bytes = std::fs::read(path).map_err(|e| format!("read error: {}", e))?;
     let content = String::from_utf8_lossy(&bytes);
 
-    // Must have a [Desktop Entry] section
-    if !content.contains("[Desktop Entry]") {
-        return Ok(None);
-    }
-
     // Parse the [Desktop Entry] section into a map — single scan, no per-key re-searching.
     let entries = parse_section(&content, "Desktop Entry");
+    if entries.is_empty() {
+        return Ok(None);
+    }
 
     let name = match localized(&entries, "Name", languages) {
         Some(n) if !n.is_empty() => n,
@@ -209,23 +231,22 @@ fn parse_desktop_file(
     // Skip hidden entries
     if entries
         .get("NoDisplay")
-        .is_some_and(|v| v.to_lowercase() == "true")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
     {
         return Ok(None);
     }
     if entries
         .get("Hidden")
-        .is_some_and(|v| v.to_lowercase() == "true")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
     {
         return Ok(None);
     }
 
     // Skip apps that explicitly exclude COSMIC via NotShowIn
     if let Some(not_show_in) = entries.get("NotShowIn") {
-        let nsi = not_show_in.to_lowercase();
-        for de in nsi.split(';') {
+        for de in not_show_in.split(';') {
             let de = de.trim();
-            if de == "cosmic" || de == "pop:cosmic" {
+            if de.eq_ignore_ascii_case("cosmic") || de.eq_ignore_ascii_case("pop:cosmic") {
                 return Ok(None);
             }
         }
@@ -233,10 +254,9 @@ fn parse_desktop_file(
 
     // OnlyShowIn limits the desktop environments the app appears in.
     if let Some(only_show_in) = entries.get("OnlyShowIn") {
-        let osi = only_show_in.to_lowercase();
-        let shown = osi.split(';').any(|de| {
+        let shown = only_show_in.split(';').any(|de| {
             let de = de.trim();
-            de == "cosmic" || de == "pop:cosmic"
+            de.eq_ignore_ascii_case("cosmic") || de.eq_ignore_ascii_case("pop:cosmic")
         });
         if !shown {
             return Ok(None);
@@ -244,17 +264,22 @@ fn parse_desktop_file(
     }
 
     // Must have Type=Application (or no Type key, which defaults to Application)
-    if entries.get("Type").map_or(false, |t| t != "Application") {
+    if entries.get("Type").is_some_and(|t| t != "Application") {
         return Ok(None);
     }
 
-    let exec = entries.get("Exec").cloned();
+    // `Exec` is required for Type=Application. Keeping an entry without it
+    // produces a card that can never launch anything.
+    let exec = match entries.get("Exec").filter(|exec| !exec.trim().is_empty()) {
+        Some(exec) => Some(exec.clone()),
+        None => return Ok(None),
+    };
     let icon = entries.get("Icon").cloned();
     let categories_str = entries.get("Categories").cloned();
     let comment = localized(&entries, "Comment", languages);
-    let terminal = entries.get("Terminal")
-        .map(|t| t.to_lowercase() == "true")
-        .unwrap_or(false);
+    let terminal = entries
+        .get("Terminal")
+        .is_some_and(|t| t.eq_ignore_ascii_case("true"));
 
     let categories: Vec<String> = categories_str
         .map(|s| {
@@ -314,20 +339,16 @@ fn localized(
 /// Parse a desktop-file section into a `HashMap<key, value>`. Single pass, no allocations per key.
 fn parse_section(content: &str, section_name: &str) -> HashMap<String, String> {
     let header = format!("[{}]", section_name);
-    let section_start = match content.find(&header) {
-        Some(pos) => pos,
-        None => return HashMap::new(),
-    };
-    let after_header = section_start + header.len();
-    let section_end = content[after_header..]
-        .find("\n[")
-        .map(|pos| after_header + pos)
-        .unwrap_or(content.len());
-
     let mut map = HashMap::new();
-    for line in content[after_header..section_end].lines() {
+    let mut in_section = false;
+
+    for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_section = trimmed == header;
+            continue;
+        }
+        if !in_section || trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
         if let Some(eq) = trimmed.find('=') {

@@ -199,13 +199,13 @@ fn default_category() -> String {
 impl Default for AppletConfig {
     fn default() -> Self {
         Self {
-            layout_mode: LayoutMode::Grid,
+            layout_mode: LayoutMode::Hybrid,
             grid_columns: 6,
             icon_size: 48.0,
-            size_preset: SizePreset::Medium,
+            size_preset: SizePreset::Portrait,
             custom_width: 0.0,
             custom_height: 0.0,
-            panel_icon: String::new(),
+            panel_icon: "cosmic-logo".into(),
             panel_icon_symbolic: false,
             max_recents: 10,
             show_favourites: true,
@@ -233,19 +233,30 @@ impl AppletConfig {
 
     /// Ensure values are within reasonable bounds (auto-upgrades stale configs).
     pub fn sanitize(&mut self) {
-        if self.grid_columns < 3 {
+        if !(3..=8).contains(&self.grid_columns) {
             self.grid_columns = 6;
         }
-        if !(24.0..=56.0).contains(&self.icon_size) {
+        if !self.icon_size.is_finite() || !(24.0..=56.0).contains(&self.icon_size) {
             self.icon_size = 48.0;
         }
-        // Clamp custom dimensions to reasonable bounds.
-        if self.custom_width > 0.0 && self.custom_width < 400.0 {
-            self.custom_width = 400.0;
+        // Clamp custom dimensions to reasonable bounds. Non-finite values
+        // can otherwise propagate into iced's layout limits.
+        if !self.custom_width.is_finite() || self.custom_width < 0.0 {
+            self.custom_width = 0.0;
+        } else if self.custom_width > 0.0 {
+            self.custom_width = self.custom_width.clamp(400.0, 2_000.0);
         }
-        if self.custom_height > 0.0 && self.custom_height < 300.0 {
-            self.custom_height = 300.0;
+        if !self.custom_height.is_finite() || self.custom_height < 0.0 {
+            self.custom_height = 0.0;
+        } else if self.custom_height > 0.0 {
+            self.custom_height = self.custom_height.clamp(300.0, 1_600.0);
         }
+
+        // Keep the persisted lists compact and bounded even when a config
+        // file was edited externally.
+        deduplicate(&mut self.favourites);
+        deduplicate(&mut self.recents);
+        self.recents.truncate(self.max_recents);
     }
 
     /// Record an app launch (adds to front of recents, trims to max).
@@ -296,4 +307,9 @@ impl AppletConfig {
         }
         Some(config)
     }
+}
+
+fn deduplicate(values: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::with_capacity(values.len());
+    values.retain(|value| !value.is_empty() && seen.insert(value.clone()));
 }
