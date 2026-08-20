@@ -255,15 +255,13 @@ impl Applet {
                 .into()
         } else {
             mouse_area(
-                container(
-                    nav_bar(&self.nav_model, Message::CategoryActivated)
-                        .into_container()
-                        .width(Length::Fixed(SIDEBAR_WIDTH))
-                        .height(Length::Fill)
-                        .padding([space_xxs, space_xxs, space_xxs, space_xxs]),
-                )
-                .width(Length::Fixed(SIDEBAR_WIDTH))
-                .height(Length::Fill),
+                // nav_bar already provides COSMIC's standard internal inset.
+                // Adding another container padding here made this sidebar's
+                // menu items sit farther from the left edge than COSMIC Store.
+                nav_bar(&self.nav_model, Message::CategoryActivated)
+                    .into_container()
+                    .width(Length::Fixed(SIDEBAR_WIDTH))
+                    .height(Length::Fill),
             )
             .on_enter(Message::ClearAppHover)
             .into()
@@ -442,11 +440,16 @@ impl Applet {
         } else {
             // Virtualized list view — only renders rows intersecting the
             // viewport, matching the grid view's approach for performance.
-            let mut list_width = menu_width as usize;
-            list_width = list_width.saturating_sub(space_xs as usize * 2);
+            // The list cards have a fixed width, so calculate their available
+            // width from the same geometry used by the main pane. Reserve the
+            // trailing gutter and the floating 8px scrollbar so the visual
+            // gap on its left matches the sidebar-to-list gap.
+            const SCROLLBAR_WIDTH: usize = 8;
+            let mut list_width = (menu_width as usize)
+                .saturating_sub(space_xxs as usize * 3 + SCROLLBAR_WIDTH);
             if !self.sidebar_collapsed {
                 list_width =
-                    list_width.saturating_sub(SIDEBAR_WIDTH as usize + space_m as usize);
+                    list_width.saturating_sub(SIDEBAR_WIDTH as usize + space_xxs as usize);
             }
 
             let GridMetrics {
@@ -547,7 +550,9 @@ impl Applet {
             }
 
             let list_content = container(column(rows).spacing(column_spacing))
-                .padding([0, space_s, 0, 0])
+                // Match the app pane's leading gutter between the sidebar and
+                // the first card, leaving an equal inset before the scrollbar.
+                .padding([0, space_xxs, 0, 0])
                 .width(Length::Fill);
 
             container(
