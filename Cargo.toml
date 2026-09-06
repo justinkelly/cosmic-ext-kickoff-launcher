@@ -3,13 +3,14 @@ name = "cosmic-kickoff-launcher"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
-description = "Kickoff Launcher for COSMIC — a KDE-style application menu applet"
+description = "A KDE-style application menu applet for COSMIC"
 
 [build-dependencies]
 xdgen = "0.1"
 
 [dependencies]
 i18n-embed-fl = "0.10"
+freedesktop-desktop-entry = "0.8"
 rust-embed = "8.11"
 serde = { version = "1", features = ["derive"] }
 shlex = "1"
@@ -34,6 +35,7 @@ features = [
     "dbus-config",
     # Integration with the COSMIC desktop
     "desktop",
+    "desktop-systemd-scope",
     # Support creating additional application windows.
     "multi-window",
     # Uses tokio as the executor for the runtime

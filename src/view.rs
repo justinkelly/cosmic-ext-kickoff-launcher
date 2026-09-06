@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! View rendering: menu layout, grid/list virtualization, bottom bar, and the
-//! settings panel.
+//! Menu views and widgets.
 
 use crate::app::{
-    Applet, Message, CORNER_BADGE_ICON_SIZE, GRID_ICON_SIZE, LIST_ICON_SIZE, SCROLLABLE_ID,
+    Applet, Message, APP_SCROLL_ID, CORNER_BADGE_ICON_SIZE, GRID_ICON_SIZE, LIST_ICON_SIZE,
     SEARCH_ID, SETTINGS_PANEL_WIDTH, SIDEBAR_WIDTH,
 };
 use crate::config::{LayoutMode, SizePreset};
@@ -25,13 +24,7 @@ use apps::ApplicationEntry;
 use std::borrow::Cow;
 use std::sync::{Arc, LazyLock};
 
-/// Panel-icon options for the settings dropdown: (icon name, display label).
-///
-/// Names in [`crate::icons::BUNDLED_NAMES`] resolve from SVG assets embedded
-/// in the binary (so they render on any icon theme, e.g. the distro logos
-/// which the COSMIC icon theme lacks). All other names must exist in the
-/// installed icon theme — the previous list contained theme-only icons that
-/// rendered blank on the COSMIC theme and were removed.
+/// Panel icon names and display labels.
 const ICON_OPTIONS: &[(&str, &str)] = &[
     ("com.system76.CosmicAppLibrary", "COSMIC App Library"),
     ("cosmic-logo", "COSMIC"),
@@ -70,14 +63,10 @@ const ICON_OPTIONS: &[(&str, &str)] = &[
     ("emblem-system-symbolic", "System"),
 ];
 
-/// Display labels for [`ICON_OPTIONS`], computed once.
 static ICON_OPTION_LABELS: LazyLock<Vec<String>> = LazyLock::new(|| {
     ICON_OPTIONS.iter().map(|(_, label)| (*label).to_string()).collect()
 });
 
-/// Lightweight handles reused by the panel-icon dropdown. The dropdown owns
-/// the small preview handles; it does not build full-size application icons or
-/// touch the application icon cache.
 static ICON_OPTION_HANDLES: LazyLock<Vec<icon::Handle>> = LazyLock::new(|| {
     ICON_OPTIONS
         .iter()
@@ -85,30 +74,70 @@ static ICON_OPTION_HANDLES: LazyLock<Vec<icon::Handle>> = LazyLock::new(|| {
         .collect()
 });
 
-/// Resolve dropdown previews away from the first settings-panel interaction.
-/// The handles are still created only once and are shared by every dropdown.
-pub fn warm_icon_option_handles() {
+pub(crate) fn warm_icon_option_handles() {
     std::thread::spawn(|| {
         LazyLock::force(&ICON_OPTION_HANDLES);
     });
 }
 
-/// Preset labels never change during the lifetime of the applet. Keeping
-/// these borrowed avoids rebuilding and cloning the dropdown model on every
-/// pointer or keyboard event in the settings panel.
 static SIZE_PRESET_LABELS: LazyLock<Vec<String>> = LazyLock::new(|| {
     SizePreset::ALL.iter().map(|preset| size_preset_label(*preset)).collect()
 });
 
-/// Estimated height of bottom-bar button content (icon/text line).
 const BOTTOM_BAR_CONTENT_HEIGHT: f32 = 21.0;
-/// Minimum touch-target height for the bottom bar.
 const BOTTOM_BAR_MIN_HEIGHT: f32 = 44.0;
-/// Minimum width of a grid cell button.
 const GRID_MIN_BUTTON_WIDTH: f32 = 80.0;
+const SCROLLBAR_WIDTH: f32 = 8.0;
+
+fn uses_grid_layout(applet: &Applet) -> bool {
+    applet.config.layout_mode == LayoutMode::Grid
+        || (applet.config.layout_mode == LayoutMode::Hybrid
+            && matches!(
+                applet.selected_category.as_ref(),
+                Some(category) if category.key == "favourites" || category.key == "recents"
+            ))
+}
+
+fn app_content_width(menu_width: f32, sidebar_visible: bool, spacing: Spacing) -> f32 {
+    let sidebar_width = if sidebar_visible {
+        SIDEBAR_WIDTH + spacing.space_m as f32
+    } else {
+        0.0
+    };
+    (menu_width
+        - spacing.space_xxs as f32 * 2.0
+        - sidebar_width
+        - spacing.space_m as f32
+        - SCROLLBAR_WIDTH)
+        .max(0.0)
+}
+
+pub(crate) fn navigation_columns(applet: &Applet) -> usize {
+    let spacing = theme::active().cosmic().spacing;
+    let menu_width = if applet.is_window_mode {
+        applet.window_width
+    } else {
+        applet.config.max_width()
+    };
+    let sidebar_visible = !applet.sidebar_collapsed && menu_width >= 600.0;
+    let content_width = app_content_width(menu_width, sidebar_visible, spacing);
+    if uses_grid_layout(applet) {
+        let fit = ((content_width / (GRID_MIN_BUTTON_WIDTH + spacing.space_s as f32)) as usize)
+            .clamp(1, 8);
+        applet.config.grid_columns.min(fit).max(1)
+    } else {
+        list_grid_metrics(
+            spacing.space_xxs,
+            spacing.space_s,
+            content_width as usize,
+        )
+        .cols
+        .max(1)
+    }
+}
 
 impl Applet {
-    pub fn build_menu_view(&self, is_popup: bool) -> Element<'_, Message> {
+    pub(crate) fn build_menu_view(&self, is_popup: bool) -> Element<'_, Message> {
         let cosmic_theme = theme::active();
         let Spacing {
             space_xxs,
@@ -117,64 +146,28 @@ impl Applet {
             space_m,
             ..
         } = cosmic_theme.cosmic().spacing;
-        let menu_width = self.config.max_width();
-        let menu_height = self.config.max_height();
+        let is_window = !is_popup;
+        let (menu_width, menu_height) = if is_window {
+            (self.window_width, self.window_height)
+        } else {
+            (self.config.max_width(), self.config.max_height())
+        };
+        let sidebar_visible = !self.sidebar_collapsed && menu_width >= 600.0;
         let show_bottom_bar_power = self.config.show_bottom_bar_power_actions;
         let show_bottom_bar_pinned =
             self.config.show_bottom_bar_pinned && !self.pinned_apps.is_empty();
         let show_bottom_bar = show_bottom_bar_pinned || show_bottom_bar_power;
-        // Bottom bar height: button content + button padding (2×space_xxs)
-        // + symmetric row padding (2×space_xxs), minimum touch target.
         let bottom_bar_height = if show_bottom_bar {
             (BOTTOM_BAR_CONTENT_HEIGHT + space_xxs as f32 * 4.0).max(BOTTOM_BAR_MIN_HEIGHT)
         } else {
             0.0
         };
-        tracing::debug!(
-            "view_window: menu={}×{} bottom_bar_h={} space_m={} space_s={}",
-            menu_width,
-            menu_height,
-            bottom_bar_height,
-            space_m,
-            space_s
-        );
-
-        // Calculate the exact height available for the app area so we don't
-        // rely on nested Fill inside Shrink chains (which can collapse in the
-        // popup_container's autosize wrapper).
-        let is_window = !is_popup;
-        let outer_pad = space_xs as f32 * 2.0;
-        let has_title = self.sidebar_collapsed && self.selected_category.is_some();
-        // In window mode the header bar provides the top buttons, so the
-        // in-content top_bar is collapsed and contributes no spacing.
-        let col_spacing_count: u32 = if is_window { 0 } else { 1 } // top_bar → next
-            + if self.search_active { 1 } else { 0 }
-            + if has_title { 1 } else { 0 }
-            + 1 // → dual_pane
-            + if show_bottom_bar { 1 } else { 0 }; // → bottom_bar
-        let total_spacing = col_spacing_count as f32 * space_xxs as f32;
-        let app_area_height = (menu_height - outer_pad - total_spacing - bottom_bar_height)
-            .max(200.0);
-        tracing::debug!(
-            "view_window: outer_pad={} col_spacings={} total_spacing={} app_area_h={}",
-            outer_pad,
-            col_spacing_count,
-            total_spacing,
-            app_area_height
-        );
-
-        // In window mode the header bar (header_start/header_end) already
-        // provides sidebar-toggle, search, and config buttons.  In popup mode
-        // we render them as an in-content top bar.
-        let top_bar: Element<'_, Message> = if is_window {
-            Space::new()
-                .width(Length::Shrink)
-                .height(Length::Shrink)
-                .into()
+        let top_bar: Option<Element<'_, Message>> = if is_window {
+            None
         } else {
             let sidebar_toggle: Element<'_, Message> = nav_bar_toggle()
                 .on_toggle(Message::ToggleSidebar)
-                .active(!self.sidebar_collapsed)
+                .active(sidebar_visible)
                 .into();
 
             let search_toggle_btn: Element<'_, Message> = button::custom(
@@ -191,18 +184,14 @@ impl Applet {
             })
             .into();
 
-            let window_btn: Element<'_, Message> = tooltip(
-                button::custom(
-                    icon::from_name("window-new-symbolic")
-                        .symbolic(true)
-                        .size(18)
-                        .icon(),
-                )
-                .on_press(Message::OpenWindow)
-                .class(theme::Button::AppletMenu),
-                cosmic::widget::text::body(fl!("open-window")),
-                cosmic::widget::tooltip::Position::Top,
+            let window_btn: Element<'_, Message> = button::custom(
+                icon::from_name("window-new-symbolic")
+                    .symbolic(true)
+                    .size(18)
+                    .icon(),
             )
+            .on_press(Message::OpenWindow)
+            .class(theme::Button::AppletMenu)
             .into();
 
             let config_btn: Element<'_, Message> = button::custom(
@@ -219,7 +208,7 @@ impl Applet {
             })
             .into();
 
-            container(
+            Some(container(
                 row![
                     sidebar_toggle,
                     search_toggle_btn,
@@ -231,10 +220,9 @@ impl Applet {
                 .spacing(space_s),
             )
             .width(Length::Fill)
-            .into()
+            .into())
         };
 
-        // ── Search bar (collapsible) ──
         let search_row: Option<Element<'_, Message>> = if self.search_active {
             let search = search_input(fl!("search-placeholder"), &self.search_field)
                 .id((*SEARCH_ID).clone())
@@ -247,17 +235,8 @@ impl Applet {
             None
         };
 
-        // ── Category sidebar (collapsible) ──
-        let nav: Element<'_, Message> = if self.sidebar_collapsed {
-            Space::new()
-                .width(Length::Shrink)
-                .height(Length::Shrink)
-                .into()
-        } else {
+        let nav: Option<Element<'_, Message>> = sidebar_visible.then(|| {
             mouse_area(
-                // nav_bar already provides COSMIC's standard internal inset.
-                // Adding another container padding here made this sidebar's
-                // menu items sit farther from the left edge than COSMIC Store.
                 nav_bar(&self.nav_model, Message::CategoryActivated)
                     .into_container()
                     .width(Length::Fixed(SIDEBAR_WIDTH))
@@ -265,23 +244,18 @@ impl Applet {
             )
             .on_enter(Message::ClearAppHover)
             .into()
-        };
+        });
 
-        // ── App area ──
-        // Precompute favourite/pinned lookups once per view (O(n) instead of
-        // O(apps × favourites) per cell).
         let fav_set = self.cached_fav_ids.borrow();
         let pinned_set = self.cached_pinned_ids.borrow();
 
-        // In Hybrid mode, use grid for Favourites/Recents categories, list otherwise.
-        let use_grid = self.config.layout_mode == LayoutMode::Grid
-            || (self.config.layout_mode == LayoutMode::Hybrid
-                && matches!(
-                    self.selected_category.as_ref(),
-                    Some(cat) if cat.key == "favourites" || cat.key == "recents"
-                ));
-        // Grid view uses the larger package-card icon size (matching cosmic-store).
-        let effective_icon_size: f32 = f32::from(GRID_ICON_SIZE);
+        let use_grid = uses_grid_layout(self);
+        let app_content_width = app_content_width(
+            menu_width,
+            sidebar_visible,
+            cosmic_theme.cosmic().spacing,
+        );
+        let grid_icon_size = f32::from(GRID_ICON_SIZE);
 
         let app_area: Element<'_, Message> = if self.available_applications.is_empty() {
             container(cosmic::widget::text::body(fl!("no-applications")))
@@ -291,33 +265,25 @@ impl Applet {
                 .width(Length::Fill)
                 .into()
         } else if use_grid {
-            // Dynamic column count based on available width.
-            let mut avail_width = menu_width - (space_xs as f32 * 2.0);
-            if !self.sidebar_collapsed {
-                avail_width -= SIDEBAR_WIDTH + space_m as f32;
-            }
-            // Each grid button needs at least 80px; compute columns.
             let min_btn = GRID_MIN_BUTTON_WIDTH + space_s as f32;
-            let grid_columns = ((avail_width / min_btn) as usize).max(3).min(8);
-            let grid_columns = self.config.grid_columns.min(grid_columns);
+            let grid_columns = self
+                .config
+                .grid_columns
+                .min(((app_content_width / min_btn) as usize).clamp(1, 8));
 
-            // Fixed height for uniform grid cells. Allow 2-3 lines of caption
-            // text so long app names wrap instead of being cut off.
-            // Caption = 12px font / 17px line-height; budget 3 lines (51px).
-            let cell_height = effective_icon_size + 44.0 + space_xxs as f32 * 2.0;
+            let cell_height = grid_icon_size + 44.0 + space_xxs as f32 * 2.0;
             let row_stride = cell_height + space_s as f32;
             let rows_total = self.available_applications.len().div_ceil(grid_columns);
             let content_h = rows_total as f32 * cell_height
                 + (rows_total.saturating_sub(1)) as f32 * space_s as f32;
 
-            // Build one grid row (absolute row index) — used only for visible rows.
             let build_row = |row_idx: usize| -> Element<'_, Message> {
                 let start = row_idx * grid_columns;
                 let end = ((row_idx + 1) * grid_columns).min(self.available_applications.len());
                 let mut buttons: Vec<Element<'_, Message>> = (start..end)
                     .map(|index| {
                         let app = &self.available_applications[index];
-                        let icon = self.cached_icon(app, effective_icon_size);
+                        let icon = self.cached_icon(app, grid_icon_size);
                         let name = truncate_name(&app.name, 32);
                         let is_selected = self.selected_index == Some(index);
                         let is_fav = fav_set.contains(app.id.as_str());
@@ -340,12 +306,10 @@ impl Applet {
                             if show_actions {
                                 stack![
                                     inner,
-                                    container(app_action_row(index, is_fav, is_pinned, true))
+                                    container(app_action_row(index, is_fav, is_pinned))
                                         .width(Length::Fill)
                                         .height(Length::Fill)
                                         .align_y(Alignment::Start)
-                                        // Keep the action glyphs close to the card's
-                                        // top and side borders.
                                         .padding(0),
                                 ]
                                 .width(Length::Fill)
@@ -363,7 +327,7 @@ impl Applet {
 
                         mouse_area(btn)
                             .on_enter(Message::AppHovered(index))
-                            .on_exit(Message::AppUnhovered(index))
+                            .on_exit(Message::AppUnhovered)
                             .into()
                     })
                     .collect();
@@ -379,31 +343,26 @@ impl Applet {
                     .into()
             };
 
-            // Virtualize: only render rows intersecting the viewport (plus one
-            // row of overscan on each side), keeping total height identical so
-            // the scrollbar and layout are unchanged.
-            let viewport_h = if self.grid_viewport_h > 0.0 {
-                self.grid_viewport_h
+            // Keep one row mounted above and below the viewport.
+            let viewport_h = if self.app_viewport_height > 0.0 {
+                self.app_viewport_height
             } else {
                 menu_height
             };
             let scroll = self
-                .grid_scroll_y
+                .app_scroll_y
                 .clamp(0.0, (content_h - viewport_h).max(0.0));
-            // First row whose bottom edge is below the top of the viewport.
             let mut first_row = if scroll <= cell_height {
                 0
             } else {
                 ((scroll - cell_height) / row_stride).floor() as usize + 1
             };
-            first_row = first_row.saturating_sub(1); // overscan above
-            // Last row whose top edge is above the bottom of the viewport.
+            first_row = first_row.saturating_sub(1);
             let mut last_row = ((scroll + viewport_h) / row_stride).ceil() as usize;
             last_row = last_row
                 .saturating_sub(1)
                 .min(rows_total.saturating_sub(1));
-            last_row = (last_row + 1).min(rows_total.saturating_sub(1)); // overscan below
-
+            last_row = (last_row + 1).min(rows_total.saturating_sub(1));
             let mut rows: Vec<Element<'_, Message>> =
                 Vec::with_capacity(last_row - first_row + 3);
             if first_row > 0 {
@@ -419,38 +378,21 @@ impl Applet {
                 rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
             }
 
-            // Keep the trailing gutter inside the scrollable content. The
-            // scrollbar occupies the viewport's right edge, so without this
-            // inset the final column is flush against it while the first
-            // column still has the main layout's leading padding.
             let app_grid = container(column(rows).spacing(space_s))
-                .padding([0, space_s, 0, 0])
+                .padding([0, space_m.saturating_add(SCROLLBAR_WIDTH as u16), 0, 0])
                 .width(Length::Fill);
-            container(
-                scrollable(app_grid)
-                    .id((*SCROLLABLE_ID).clone())
-                    .height(Length::Fill)
-                    .on_scroll(|vp| {
-                        Message::GridScrolled(vp.absolute_offset().y, vp.bounds().height)
-                    }),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            let scroller = scrollable(app_grid)
+                .id((*APP_SCROLL_ID).clone())
+                .height(Length::Fill)
+                .on_scroll(|vp| {
+                    Message::AppsScrolled(vp.absolute_offset().y, vp.bounds().height)
+                });
+            container(scroller)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         } else {
-            // Virtualized list view — only renders rows intersecting the
-            // viewport, matching the grid view's approach for performance.
-            // The list cards have a fixed width, so calculate their available
-            // width from the same geometry used by the main pane. Reserve the
-            // trailing gutter and the floating 8px scrollbar so the visual
-            // gap on its left matches the sidebar-to-list gap.
-            const SCROLLBAR_WIDTH: usize = 8;
-            let mut list_width = (menu_width as usize)
-                .saturating_sub(space_xxs as usize * 3 + SCROLLBAR_WIDTH);
-            if !self.sidebar_collapsed {
-                list_width =
-                    list_width.saturating_sub(SIDEBAR_WIDTH as usize + space_xxs as usize);
-            }
+            let list_width = app_content_width as usize;
 
             let GridMetrics {
                 cols,
@@ -472,14 +414,13 @@ impl Applet {
                 total_rows as f32 * row_stride - column_spacing as f32
             };
 
-            // Virtualize: only render rows near the viewport.
-            let viewport_h = if self.grid_viewport_h > 0.0 {
-                self.grid_viewport_h
+            let viewport_h = if self.app_viewport_height > 0.0 {
+                self.app_viewport_height
             } else {
                 menu_height
             };
             let scroll = self
-                .grid_scroll_y
+                .app_scroll_y
                 .clamp(0.0, (content_h - viewport_h).max(0.0));
             let first_row = if scroll <= row_stride {
                 0usize
@@ -491,11 +432,17 @@ impl Applet {
                 .min(total_rows.saturating_sub(1))
                 .saturating_add(1)
                 .min(total_rows.saturating_sub(1));
-
-            // Pre-compute text column width once per view (same for all cards).
             let text_width = item_width.saturating_sub(
-                LIST_ICON_SIZE as usize + space_s as usize * 3,
+                LIST_ICON_SIZE as usize
+                    + space_s as usize * 3
+                    + ACTION_ROW_HEIGHT as usize * 2,
             ) as f32;
+            let card_layout = ListCardLayout {
+                space_xxs,
+                space_s,
+                text_width,
+                width: item_width,
+            };
 
             let mut rows: Vec<Element<'_, Message>> =
                 Vec::with_capacity(last_row.saturating_sub(first_row) + 3);
@@ -507,25 +454,24 @@ impl Applet {
                 let start = row_idx * cols;
                 let end = (start + cols).min(apps.len());
                 let mut row_children: Vec<Element<'_, Message>> = Vec::with_capacity(cols);
-                for i in start..end {
-                    let app = &apps[i];
+                for index in start..end {
+                    let app = &apps[index];
                     let is_fav = fav_set.contains(app.id.as_str());
                     let is_pinned = pinned_set.contains(app.id.as_str());
-                    let is_selected = self.selected_index == Some(i);
-                    let show_actions = self.hovered_app_index == Some(i);
+                    let is_selected = self.selected_index == Some(index);
+                    let show_actions = self.hovered_app_index == Some(index);
                     let icon = self.cached_icon(app, LIST_ICON_SIZE as f32);
                     row_children.push(app_list_card(
                         app,
                         icon,
-                        space_xxs,
-                        space_s,
-                        text_width,
-                        item_width,
-                        i,
-                        is_fav,
-                        is_pinned,
-                        is_selected,
-                        show_actions,
+                        card_layout,
+                        AppCardState {
+                            index,
+                            is_favourite: is_fav,
+                            is_pinned,
+                            is_selected,
+                            show_actions,
+                        },
                     ));
                 }
                 let missing = cols.saturating_sub(row_children.len());
@@ -550,22 +496,19 @@ impl Applet {
             }
 
             let list_content = container(column(rows).spacing(column_spacing))
-                // Match the app pane's leading gutter between the sidebar and
-                // the first card, leaving an equal inset before the scrollbar.
-                .padding([0, space_xxs, 0, 0])
+                .padding([0, space_m.saturating_add(SCROLLBAR_WIDTH as u16), 0, 0])
                 .width(Length::Fill);
 
-            container(
-                scrollable(list_content)
-                    .id((*SCROLLABLE_ID).clone())
-                    .height(Length::Fill)
-                    .on_scroll(|vp| {
-                        Message::GridScrolled(vp.absolute_offset().y, vp.bounds().height)
-                    }),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            let scroller = scrollable(list_content)
+                .id((*APP_SCROLL_ID).clone())
+                .height(Length::Fill)
+                .on_scroll(|vp| {
+                    Message::AppsScrolled(vp.absolute_offset().y, vp.bounds().height)
+                });
+            container(scroller)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         };
 
         let app_area: Element<'_, Message> = mouse_area(
@@ -576,9 +519,7 @@ impl Applet {
         .on_exit(Message::ClearAppHover)
         .into();
 
-        // ── Settings panel (right side) ──
         let settings_panel: Option<Element<'_, Message>> = if self.show_settings {
-            // Layout mode (radio group — one of Grid/List/Hybrid)
             let layout_radios: Element<'_, Message> = {
                 let selected = self.config.layout_mode;
                 let choice = |mode: LayoutMode, label: String| {
@@ -599,13 +540,7 @@ impl Applet {
                 .into()
             };
 
-            // Menu size preset (dropdown)
-            // Keep the selection list static. Custom dimensions are shown in
-            // the inputs below, avoiding a per-frame allocation and relayout
-            // of every dropdown option while editing.
-            let size_labels = std::borrow::Cow::Borrowed(SIZE_PRESET_LABELS.as_slice());
-            // The dropdown shows "Custom" while the custom size is being
-            // edited, even though the config preset is unchanged until Apply.
+            let size_labels = Cow::Borrowed(SIZE_PRESET_LABELS.as_slice());
             let selected_size = {
                 let preset = if self.custom_size_selected {
                     SizePreset::Custom
@@ -624,90 +559,53 @@ impl Applet {
                 .padding([space_xxs, space_xxs])
                 .into();
 
-            // Custom size inputs — shown while "Custom" is being edited
-            // (selected but not applied, or already applied).
             let custom_size_row: Option<Element<'_, Message>> =
                 (self.custom_size_selected || self.config.size_preset == SizePreset::Custom)
                     .then(|| {
-                    column![
-                        row![
-                            text_input(fl!("width-px"), &self.custom_width_input)
-                                .on_input(Message::SetCustomWidth)
+                        column![
+                            row![
+                                text_input(fl!("width-px"), &self.custom_width_input)
+                                    .on_input(Message::SetCustomWidth)
+                                    .width(Length::Fill)
+                                    .padding([space_xxs, space_xxs]),
+                                Space::new().width(Length::Fixed(space_xxs as f32)),
+                                text_input(fl!("height-px"), &self.custom_height_input)
+                                    .on_input(Message::SetCustomHeight)
+                                    .width(Length::Fill)
+                                    .padding([space_xxs, space_xxs]),
+                            ]
+                            .spacing(space_xxs)
+                            .width(Length::Fill),
+                            button::standard(fl!("apply"))
+                                .on_press(Message::ApplyCustomSize)
                                 .width(Length::Fill)
-                                .padding([space_xxs, space_xxs]),
-                            Space::new().width(Length::Fixed(space_xxs as f32)),
-                            text_input(fl!("height-px"), &self.custom_height_input)
-                                .on_input(Message::SetCustomHeight)
-                                .width(Length::Fill)
-                                .padding([space_xxs, space_xxs]),
                         ]
                         .spacing(space_xxs)
-                        .width(Length::Fill),
-                        button::standard(fl!("apply"))
-                            .on_press(Message::ApplyCustomSize)
-                            .width(Length::Fill),
-                    ]
-                    .spacing(space_xxs)
-                    .width(Length::Fill)
-                    .into()
-                });
+                        .width(Length::Fill)
+                        .into()
+                    });
 
-            // Panel icon dropdown
             let current_icon = match self.config.panel_icon.as_str() {
                 "" => "cosmic-logo",
-                // Migrate the old bundled KDE icon visually without changing
-                // the user's persisted configuration on every view rebuild.
                 "kde" => "kde-official",
                 name => name,
             };
             let selected_idx = ICON_OPTIONS
                 .iter()
                 .position(|(name, _)| *name == current_icon);
-            // Keep this text-only. Rendering every SVG preview in the popup
-            // makes opening the panel-icon selector noticeably expensive.
             let picker: Element<'_, Message> = dropdown(
                 ICON_OPTION_LABELS.as_slice(),
                 selected_idx,
                 move |idx: usize| {
-                let icon_name = ICON_OPTIONS[idx].0.to_string();
-                Message::SetPanelIcon(icon_name)
+                    let icon_name = ICON_OPTIONS[idx].0.to_string();
+                    Message::SetPanelIcon(icon_name)
                 },
             )
-            .icons(std::borrow::Cow::Borrowed(ICON_OPTION_HANDLES.as_slice()))
+            .icons(Cow::Borrowed(ICON_OPTION_HANDLES.as_slice()))
             .width(Length::Fill)
             .padding([space_xxs, space_s])
             .into();
 
-            // Boolean toggles (titles are provided by the settings items)
-            let monochrome_toggle: Element<'_, Message> =
-                cosmic::widget::toggler(self.config.panel_icon_symbolic)
-                    .on_toggle(|_| Message::TogglePanelIconSymbolic)
-                    .into();
-            let show_favourites_toggle: Element<'_, Message> =
-                cosmic::widget::toggler(self.config.show_favourites)
-                    .on_toggle(|_| Message::ToggleShowFavourites)
-                    .into();
-            let show_recents_toggle: Element<'_, Message> =
-                cosmic::widget::toggler(self.config.show_recents)
-                    .on_toggle(|_| Message::ToggleShowRecents)
-                    .into();
-            let hide_sidebar_toggle: Element<'_, Message> =
-                cosmic::widget::toggler(self.config.sidebar_collapsed)
-                    .on_toggle(|_| Message::ToggleSidebarDefault)
-                    .into();
-            let show_pinned_toggle: Element<'_, Message> =
-                cosmic::widget::toggler(self.config.show_bottom_bar_pinned)
-                    .on_toggle(|_| Message::ToggleShowBottomBarPinned)
-                    .into();
-            let show_power_toggle: Element<'_, Message> =
-                cosmic::widget::toggler(self.config.show_bottom_bar_power_actions)
-                    .on_toggle(|_| Message::ToggleShowBottomBarPowerActions)
-                    .into();
-
-            // Default category dropdown
-            // Default category dropdown — mirrors the sidebar nav: All
-            // Applications, Favourites/Recents (when shown in the sidebar)
-            // and every app category.
             let mut default_keys: Vec<String> = Vec::new();
             let mut default_labels: Vec<String> = Vec::new();
             default_keys.push("all".to_string());
@@ -749,21 +647,40 @@ impl Applet {
                             .map(|row| stacked_item(fl!("custom-size"), row, space_xxs))
                     )
                     .add(stacked_item(fl!("panel-icon"), picker, space_xxs))
-                    .add(settings::item(fl!("monochrome-icon"), monochrome_toggle))
+                    .add(
+                        settings::item::builder(fl!("monochrome-icon")).toggler(
+                            self.config.panel_icon_symbolic,
+                            |_| Message::TogglePanelIconSymbolic,
+                        ),
+                    )
                     .into(),
                 settings::section()
                     .title(fl!("sidebar"))
-                    .add(settings::item(fl!("show-favourites"), show_favourites_toggle))
-                    .add(settings::item(fl!("show-recents"), show_recents_toggle))
-                    .add(settings::item(
-                        fl!("hide-sidebar-by-default"),
-                        hide_sidebar_toggle,
+                    .add(settings::item::builder(fl!("show-favourites")).toggler(
+                        self.config.show_favourites,
+                        |_| Message::ToggleShowFavourites,
                     ))
+                    .add(settings::item::builder(fl!("show-recents")).toggler(
+                        self.config.show_recents,
+                        |_| Message::ToggleShowRecents,
+                    ))
+                    .add(
+                        settings::item::builder(fl!("hide-sidebar-by-default")).toggler(
+                            self.config.sidebar_collapsed,
+                            |_| Message::ToggleSidebarDefault,
+                        ),
+                    )
                     .into(),
                 settings::section()
                     .title(fl!("bottom-bar"))
-                    .add(settings::item(fl!("show-pinned-apps"), show_pinned_toggle))
-                    .add(settings::item(fl!("show-power-actions"), show_power_toggle))
+                    .add(settings::item::builder(fl!("show-pinned-apps")).toggler(
+                        self.config.show_bottom_bar_pinned,
+                        |_| Message::ToggleShowBottomBarPinned,
+                    ))
+                    .add(settings::item::builder(fl!("show-power-actions")).toggler(
+                        self.config.show_bottom_bar_power_actions,
+                        |_| Message::ToggleShowBottomBarPowerActions,
+                    ))
                     .into(),
                 settings::section()
                     .title(fl!("default-menu"))
@@ -778,18 +695,9 @@ impl Applet {
             let settings_header = row![
                 cosmic::widget::text::heading(fl!("settings-title")),
                 Space::new().width(Length::Fill),
-                tooltip(
-                    button::custom(
-                        icon::from_name("window-close-symbolic")
-                            .symbolic(true)
-                            .size(18)
-                            .icon(),
-                    )
+                button::text(fl!("close"))
+                    .trailing_icon(icon::from_name("go-next-symbolic"))
                     .on_press(Message::ToggleSettings)
-                    .class(theme::Button::Icon),
-                    cosmic::widget::text::body(fl!("close")),
-                    cosmic::widget::tooltip::Position::Top,
-                ),
             ]
             .align_y(Alignment::Center)
             .width(Length::Fill);
@@ -816,7 +724,6 @@ impl Applet {
             None
         };
 
-        // ── Bottom bar ──
         let menu_too_small = menu_height < 600.0 || menu_width <= 600.0;
         let bottom_bar: Element<'_, Message> = if show_bottom_bar {
             let mut bottom_row = row![]
@@ -860,7 +767,7 @@ impl Applet {
             }
 
             if show_bottom_bar_power {
-                for &action in PowerAction::BOTTOM_BAR.iter() {
+                for action in PowerAction::BOTTOM_BAR {
                     bottom_row = bottom_row.push(bottom_bar_action_button(
                         icon::from_name(action.icon_name())
                             .symbolic(true)
@@ -876,7 +783,7 @@ impl Applet {
                 }
             }
 
-            container(bottom_row.padding([space_xxs, space_xxs, space_xxs, space_xxs]))
+            container(bottom_row.padding(space_xxs))
                 .height(Length::Fixed(bottom_bar_height))
                 .width(Length::Fill)
                 .class(theme::Container::Primary)
@@ -888,21 +795,17 @@ impl Applet {
                 .into()
         };
 
-        // ── Main layout ──
         let mut dual_pane = row![]
-            .spacing(space_xxs)
+            .spacing(space_m)
             .width(Length::Fill)
             .height(Length::Fill);
 
-        if !self.sidebar_collapsed {
+        if let Some(nav) = nav {
             dual_pane = dual_pane.push(nav);
         }
         dual_pane = dual_pane.push(app_area);
 
         let dual_pane: Element<'_, Message> = if let Some(settings) = settings_panel {
-            // Keep the application view mounted and float settings above it.
-            // This preserves the current app list, scroll position, and
-            // bottom bar while the panel is open.
             stack![
                 dual_pane,
                 container(settings)
@@ -918,10 +821,9 @@ impl Applet {
             dual_pane.into()
         };
 
-        // ── Category title (shown when sidebar is hidden) ──
-        let category_title: Option<Element<'_, Message>> = if self.sidebar_collapsed {
+        let category_title: Option<Element<'_, Message>> = if !sidebar_visible {
             self.selected_category.as_ref().map(|cat| {
-                let icon = icon::from_name(std::sync::Arc::from(cat.icon_name.as_str()))
+                let icon = icon::from_name(Arc::from(cat.icon_name.as_str()))
                     .symbolic(true)
                     .size(20)
                     .icon();
@@ -941,13 +843,14 @@ impl Applet {
             None
         };
 
-        // Build the section above the bottom bar: top_bar + optional search +
-        // optional category title + the dual_pane app grid.
-        let mut main_col = column![top_bar]
+        let mut main_col = column![]
             .spacing(space_xxs)
             .padding([space_xxs, space_xxs, space_xxs, space_xxs])
             .width(Length::Fill);
 
+        if let Some(top_bar) = top_bar {
+            main_col = main_col.push(top_bar);
+        }
         if let Some(sr) = search_row {
             main_col = main_col.push(sr);
         }
@@ -959,11 +862,7 @@ impl Applet {
             main_col = main_col.push(bottom_bar);
         }
 
-        // Outer container: fixed size so the Fill column has a definite height
-        // to distribute. The column's own padding provides visual spacing from
-        // the popup edges.
         if is_popup {
-            // Popup mode: fixed size inside a popup_container (frosted glass).
             let layout = container(main_col)
                 .width(Length::Fixed(menu_width))
                 .height(Length::Fixed(menu_height));
@@ -980,8 +879,6 @@ impl Applet {
                 )
                 .into()
         } else {
-            // Window mode: fill the entire window, frosted-glass background
-            // matching the panel / title-bar appearance.
             container(main_col)
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -1001,9 +898,6 @@ impl Applet {
     }
 }
 
-/// A settings item with the label above the control, so dropdowns and
-/// segmented controls get the full panel width instead of being squashed
-/// into the narrow space beside the label.
 fn stacked_item<'a>(
     title: impl Into<Cow<'a, str>> + 'a,
     widget: impl Into<Element<'a, Message>>,
@@ -1018,7 +912,6 @@ fn stacked_item<'a>(
     .into()
 }
 
-/// Localized label for a size preset, including dimensions.
 fn size_preset_label(preset: SizePreset) -> String {
     let label = match preset {
         SizePreset::Small => fl!("size-small"),
@@ -1041,8 +934,6 @@ fn size_preset_label(preset: SizePreset) -> String {
         )
     }
 }
-
-// ── List view helpers (Cosmic Store style) ──
 
 struct GridMetrics {
     cols: usize,
@@ -1192,8 +1083,6 @@ fn action_icon(name: &str, is_active: bool) -> cosmic::widget::icon::Icon {
 }
 
 fn corner_fav_icon(is_favourite: bool) -> cosmic::widget::icon::Icon {
-    // Keep the glyph filled in both states; state is communicated by the
-    // COSMIC accent color rather than switching to an outline star.
     action_icon("starred-symbolic", is_favourite)
 }
 
@@ -1243,7 +1132,6 @@ fn corner_icon_button(
     .into()
 }
 
-/// Compact action button placed beside the app icon.
 fn app_pin_action_button(index: usize, is_pinned: bool) -> Element<'static, Message> {
     let (pin_msg, tooltip_text) = if is_pinned {
         (Message::UnpinFromTray(index), fl!("unpin-from-tray"))
@@ -1266,22 +1154,11 @@ fn app_fav_action_button(index: usize, is_favourite: bool) -> Element<'static, M
     )
 }
 
-/// Pin and favourite actions remain discoverable above grid icons and beside
-/// list icons. Active actions use the theme accent; inactive actions are
-/// solid monochrome foreground icons.
 fn app_action_row(
     index: usize,
     is_favourite: bool,
     is_pinned: bool,
-    show_actions: bool,
 ) -> Element<'static, Message> {
-    if !show_actions {
-        return Space::new()
-            .width(Length::Fill)
-            .height(Length::Fixed(ACTION_ROW_HEIGHT))
-            .into();
-    }
-
     row![
         app_pin_action_button(index, is_pinned),
         Space::new().width(Length::Fill),
@@ -1306,13 +1183,10 @@ fn app_action_buttons(
     .into()
 }
 
-/// Grid cards are transparent until hovered, matching the COSMIC app launcher.
 fn app_grid_card_class(selected: bool) -> theme::Button {
     app_card_class(selected, true)
 }
 
-/// List cards retain a subtle surface while hover/active uses the left-menu
-/// navigation highlight background.
 fn app_list_card_class(selected: bool) -> theme::Button {
     app_card_class(selected, false)
 }
@@ -1355,25 +1229,33 @@ fn app_card_class(selected: bool, transparent_idle: bool) -> theme::Button {
             }
         }),
         disabled: Box::new(idle),
-        // Match NavBar hover alpha (0.3) from libcosmic segmented_button.
         hovered: Box::new(move |_focused, theme| highlight(theme, 0.3)),
         pressed: Box::new(move |_focused, theme| highlight(theme, 0.25)),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn app_list_card<'a>(
-    app: &'a ApplicationEntry,
-    icon: cosmic::widget::icon::Icon,
+#[derive(Clone, Copy)]
+struct ListCardLayout {
     space_xxs: u16,
     space_s: u16,
     text_width: f32,
     width: usize,
+}
+
+#[derive(Clone, Copy)]
+struct AppCardState {
     index: usize,
     is_favourite: bool,
     is_pinned: bool,
     is_selected: bool,
     show_actions: bool,
+}
+
+fn app_list_card<'a>(
+    app: &'a ApplicationEntry,
+    icon: cosmic::widget::icon::Icon,
+    layout: ListCardLayout,
+    state: AppCardState,
 ) -> Element<'a, Message> {
     let summary = app
         .description
@@ -1381,7 +1263,7 @@ fn app_list_card<'a>(
         .map(|d| truncate_name(d, 60))
         .unwrap_or_default();
 
-    let effective_text_width = text_width.max(40.0);
+    let effective_text_width = layout.text_width.max(40.0);
 
     let name_row: Element<'_, Message> = cosmic::widget::text::body(&app.name)
         .height(Length::Fixed(20.0))
@@ -1389,8 +1271,8 @@ fn app_list_card<'a>(
         .wrapping(cosmic::iced::widget::text::Wrapping::Word)
         .into();
 
-    let card_height = LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0;
-    let card_width = width as f32;
+    let card_height = LIST_ICON_SIZE as f32 + (layout.space_xxs as f32) * 2.0;
+    let card_width = layout.width as f32;
 
     let card_body = row![
         icon,
@@ -1404,13 +1286,17 @@ fn app_list_card<'a>(
         .spacing(2),
     ]
     .align_y(Alignment::Center)
-    .spacing(space_s)
+    .spacing(layout.space_s)
     .width(Length::Fill);
 
-    let card_content: Element<'a, Message> = if show_actions {
+    let card_content: Element<'a, Message> = if state.show_actions {
         stack![
             card_body,
-            container(app_action_buttons(index, is_favourite, is_pinned))
+            container(app_action_buttons(
+                state.index,
+                state.is_favourite,
+                state.is_pinned,
+            ))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .align_x(Alignment::End)
@@ -1425,22 +1311,19 @@ fn app_list_card<'a>(
     };
 
     let btn = button::custom(card_content)
-        .force_enabled(true)
-        .padding([space_xxs, space_s])
+        .on_press(Message::LaunchApp(state.index))
+        .padding([layout.space_xxs, layout.space_s])
         .width(Length::Fixed(card_width))
         .height(Length::Fixed(card_height))
-        .class(app_list_card_class(is_selected));
+        .class(app_list_card_class(state.is_selected));
 
     mouse_area(btn)
-        .on_enter(Message::AppHovered(index))
-        .on_exit(Message::AppUnhovered(index))
-        .on_press(Message::LaunchApp(index))
+        .on_enter(Message::AppHovered(state.index))
+        .on_exit(Message::AppUnhovered)
         .into()
 }
 
-// ── Icon helpers ──
-
-pub fn app_icon(app: &ApplicationEntry, size: f32) -> cosmic::widget::icon::Icon {
+pub(crate) fn app_icon(app: &ApplicationEntry, size: f32) -> cosmic::widget::icon::Icon {
     let size_u16 = size as u16;
     if let Some(ref name) = app.icon {
         let name: Arc<str> = Arc::from(name.as_str());
@@ -1467,19 +1350,27 @@ pub fn app_icon(app: &ApplicationEntry, size: f32) -> cosmic::widget::icon::Icon
 }
 
 fn truncate_name<'a>(name: &'a str, max_chars: usize) -> Cow<'a, str> {
-    if name.len() <= max_chars {
+    if max_chars == 0 {
+        return Cow::Borrowed("");
+    }
+    let mut indices = name.char_indices();
+    let Some((end, _)) = indices.nth(max_chars - 1) else {
+        return Cow::Borrowed(name);
+    };
+    if indices.next().is_none() {
         return Cow::Borrowed(name);
     }
-    // Use char_indices to find a safe UTF-8 boundary.
-    let mut end = 0;
-    for (i, (byte_pos, _)) in name.char_indices().enumerate() {
-        if i >= max_chars.saturating_sub(1) {
-            end = byte_pos;
-            break;
-        }
-    }
-    if end == 0 {
-        end = name.len();
-    }
     Cow::Owned(format!("{}…", &name[..end]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_name;
+
+    #[test]
+    fn truncates_at_character_boundaries() {
+        assert_eq!(truncate_name("short", 8), "short");
+        assert_eq!(truncate_name("exact", 5), "exact");
+        assert_eq!(truncate_name("aéioux", 5), "aéio…");
+    }
 }

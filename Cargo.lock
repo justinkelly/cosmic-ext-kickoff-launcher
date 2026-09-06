@@ -968,6 +968,7 @@ dependencies = [
 name = "cosmic-kickoff-launcher"
 version = "0.1.0"
 dependencies = [
+ "freedesktop-desktop-entry",
  "i18n-embed",
  "i18n-embed-fl",
  "libcosmic",

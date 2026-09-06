@@ -2,9 +2,13 @@
 
 //! Application model and COSMIC application implementation.
 
-use crate::config::{AppletConfig, LayoutMode, SizePreset};
-use crate::{apps, dock, fl, power, view};
+use crate::config::{validated_custom_size, AppletConfig, LayoutMode, SizePreset};
+use crate::{apps, dock, fl, launch, power, view};
 use cosmic::app::{Core, Task};
+use cosmic::applet::token::subscription::{
+    activation_token_subscription, TokenRequest, TokenUpdate,
+};
+use cosmic::cctk::sctk::reexports::calloop::channel::Sender;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::{
     event::{self, listen_raw},
@@ -20,67 +24,60 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
-pub const APP_ID: &str = "com.github.cosmic-kickoff-launcher";
+pub(crate) const APP_ID: &str = "com.github.cosmic-kickoff-launcher";
 const LEGACY_APP_ID: &str = "com.github.cosmic-kde-launcher";
-pub const COSMIC_FILES_APP_ID: &str = "com.system76.CosmicFiles.desktop";
-pub const COSMIC_SETTINGS_APP_ID: &str = "com.system76.CosmicSettings.desktop";
-pub const GRID_ICON_SIZE: u16 = 64;
-pub const LIST_ICON_SIZE: u16 = 48;
-pub const SIDEBAR_WIDTH: f32 = 240.0;
-pub const SETTINGS_PANEL_WIDTH: f32 = 320.0;
-pub const CORNER_BADGE_ICON_SIZE: u16 = 16;
-pub static SEARCH_ID: LazyLock<cosmic::widget::Id> = LazyLock::new(cosmic::widget::Id::unique);
-pub static SCROLLABLE_ID: LazyLock<cosmic::widget::Id> = LazyLock::new(cosmic::widget::Id::unique);
+pub(crate) const COSMIC_FILES_APP_ID: &str = "com.system76.CosmicFiles.desktop";
+pub(crate) const COSMIC_SETTINGS_APP_ID: &str = "com.system76.CosmicSettings.desktop";
+pub(crate) const GRID_ICON_SIZE: u16 = 64;
+pub(crate) const LIST_ICON_SIZE: u16 = 48;
+pub(crate) const SIDEBAR_WIDTH: f32 = 240.0;
+pub(crate) const SETTINGS_PANEL_WIDTH: f32 = 320.0;
+pub(crate) const CORNER_BADGE_ICON_SIZE: u16 = 16;
+pub(crate) static SEARCH_ID: LazyLock<cosmic::widget::Id> =
+    LazyLock::new(cosmic::widget::Id::unique);
+pub(crate) static APP_SCROLL_ID: LazyLock<cosmic::widget::Id> =
+    LazyLock::new(cosmic::widget::Id::unique);
 
-pub struct Applet {
+pub(crate) struct Applet {
     pub(crate) core: Core,
     pub(crate) popup: Option<Id>,
-    /// True when running as a standalone window (`--window`), false when
-    /// running as a panel applet.
+    /// Whether the app was started with `--window`.
     pub(crate) is_window_mode: bool,
+    pub(crate) window_width: f32,
+    pub(crate) window_height: f32,
     pub(crate) search_field: String,
     pub(crate) search_active: bool,
     pub(crate) all_applications: Vec<Arc<ApplicationEntry>>,
     pub(crate) available_applications: Vec<Arc<ApplicationEntry>>,
     pub(crate) available_categories: Vec<ApplicationCategory>,
     pub(crate) selected_category: Option<ApplicationCategory>,
-    /// cosmic-config context used to persist settings.
     pub(crate) config_context: Option<cosmic_config::Config>,
     pub(crate) config: AppletConfig,
     pub(crate) custom_width_input: String,
     pub(crate) custom_height_input: String,
-    /// True when "Custom" is picked in the size dropdown but not yet applied;
-    /// the menu keeps its current size until Apply is pressed.
     pub(crate) custom_size_selected: bool,
     pub(crate) selected_index: Option<usize>,
     pub(crate) nav_model: segmented_button::SingleSelectModel,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) show_settings: bool,
-    /// App index currently under the pointer (for hover action icons).
     pub(crate) hovered_app_index: Option<usize>,
-    /// Pinned app ID under the pointer in the bottom bar.
     pub(crate) hovered_pinned_id: Option<String>,
     pub(crate) pinned_apps: Vec<String>,
-    /// Scroll offset (px) of the app-grid scrollable, tracked for virtualized
-    /// rendering so only rows in the viewport are built each view.
-    pub(crate) grid_scroll_y: f32,
-    /// Height (px) of the app-grid viewport, from the scrollable's viewport.
-    pub(crate) grid_viewport_h: f32,
+    pub(crate) app_scroll_y: f32,
+    pub(crate) app_viewport_height: f32,
     pub(crate) icon_cache: RefCell<HashMap<(String, u16), cosmic::widget::icon::Icon>>,
     pub(crate) panel_icon_cache:
         RefCell<Option<(String, bool, cosmic::widget::icon::Handle)>>,
     pub(crate) cached_fav_ids: RefCell<HashSet<String>>,
     pub(crate) cached_pinned_ids: RefCell<HashSet<String>>,
-    /// Set of .desktop file basenames known at last scan — used to detect
-    /// new/removed apps without a full re-parse.
-    pub(crate) known_desktop_ids: HashSet<String>,
-    /// Prevents the periodic watcher from starting duplicate rescans while a
-    /// previous blocking scan is still running.
     pub(crate) app_refresh_in_progress: bool,
+    pub(crate) activation_token_sender: Option<Sender<TokenRequest>>,
+    pub(crate) pending_launches: HashMap<String, Arc<ApplicationEntry>>,
+    pub(crate) next_launch_request: u64,
 }
 
 #[derive(Debug, Clone)]
-pub enum Message {
+pub(crate) enum Message {
     TogglePopup,
     PopupClosed(Id),
     ClosePopup,
@@ -89,8 +86,10 @@ pub enum Message {
     SearchCleared,
     ToggleSearch,
     LaunchApp(usize),
-    SelectNext,
-    SelectPrevious,
+    SelectLeft,
+    SelectRight,
+    SelectUp,
+    SelectDown,
     LaunchSelected,
     LayoutMode(LayoutMode),
     ToggleSidebar,
@@ -116,20 +115,37 @@ pub enum Message {
     Surface(cosmic::surface::Action),
     PowerAction(power::PowerAction),
     PowerActionDone,
+    ActivationToken(TokenUpdate),
+    LaunchFinished,
     CategoryActivated(segmented_button::Entity),
-    /// App grid scrolled — carries the absolute vertical offset (px) and the
-    /// viewport height (px), used to render only visible rows.
-    GridScrolled(f32, f32),
+    AppsScrolled(f32, f32),
     AppHovered(usize),
-    AppUnhovered(usize),
+    AppUnhovered,
     ClearAppHover,
-    /// Periodic app-list refresh — detects newly installed/removed apps.
     RefreshApps,
     RefreshAppsFailed,
-    /// Result of a background app-list reload.
     AppsRefreshed(Vec<Arc<ApplicationEntry>>, Vec<ApplicationCategory>),
-    /// Config updated externally (cosmic-settings-daemon).
     UpdateConfig(AppletConfig),
+}
+
+fn reload_apps() -> Task<Message> {
+    Task::future(async {
+        match tokio::task::spawn_blocking(|| {
+            let applications = apps::load_apps();
+            let categories = apps::load_categories(&applications);
+            (applications, categories)
+        })
+        .await
+        {
+            Ok((applications, categories)) => {
+                cosmic::action::app(Message::AppsRefreshed(applications, categories))
+            }
+            Err(err) => {
+                tracing::warn!("Failed to reload applications: {err}");
+                cosmic::action::app(Message::RefreshAppsFailed)
+            }
+        }
+    })
 }
 
 impl Application for Applet {
@@ -147,8 +163,6 @@ impl Application for Applet {
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
-        // Resolve the small settings-panel icon previews off the UI thread so
-        // opening the panel never pays the icon-theme lookup cost.
         view::warm_icon_option_handles();
 
         // Load config from cosmic-config, migrating the legacy TOML if needed.
@@ -160,8 +174,6 @@ impl Application for Applet {
                         Err((_errors, config)) => config,
                     };
                     if config == AppletConfig::default() {
-                        // Preserve settings from the previous app ID when
-                        // upgrading an existing installation.
                         if let Ok(legacy_context) =
                             cosmic_config::Config::new(LEGACY_APP_ID, AppletConfig::VERSION)
                         {
@@ -185,22 +197,23 @@ impl Application for Applet {
             };
         config.sanitize();
 
-        let apps = apps::load_apps();
-        let categories = apps::load_categories(&apps);
-        tracing::info!("Preloaded {} apps, {} categories", apps.len(), categories.len());
-
-        // Load pinned apps from CosmicDock (Files + Settings shown by default).
         let pinned_apps = dock::load_pinned_apps_with_defaults();
+        let cached_pinned_ids = pinned_apps.iter().cloned().collect();
+        let cached_fav_ids = config.favourites.iter().cloned().collect();
 
+        let window_width = config.max_width();
+        let window_height = config.max_height();
         let mut applet = Self {
             core,
             popup: None,
             is_window_mode: std::env::args().any(|a| a == "--window"),
+            window_width,
+            window_height,
             search_field: String::new(),
             search_active: false,
-            all_applications: apps.clone(),
-            available_applications: apps,
-            available_categories: categories,
+            all_applications: Vec::new(),
+            available_applications: Vec::new(),
+            available_categories: Vec::new(),
             selected_category: None,
             config_context,
             config,
@@ -214,34 +227,28 @@ impl Application for Applet {
             hovered_app_index: None,
             hovered_pinned_id: None,
             pinned_apps: pinned_apps.clone(),
-            grid_scroll_y: 0.0,
-            grid_viewport_h: 0.0,
+            app_scroll_y: 0.0,
+            app_viewport_height: 0.0,
             icon_cache: RefCell::new(HashMap::new()),
             panel_icon_cache: RefCell::new(None),
-            cached_fav_ids: RefCell::new(HashSet::new()),
-            cached_pinned_ids: RefCell::new(HashSet::new()),
-            known_desktop_ids: apps::list_desktop_ids(),
-            app_refresh_in_progress: false,
+            cached_fav_ids: RefCell::new(cached_fav_ids),
+            cached_pinned_ids: RefCell::new(cached_pinned_ids),
+            app_refresh_in_progress: true,
+            activation_token_sender: None,
+            pending_launches: HashMap::new(),
+            next_launch_request: 0,
         };
         applet.sidebar_collapsed = applet.config.sidebar_collapsed;
-        // Prefill the custom-size inputs when the Custom preset is active.
         if applet.config.size_preset == SizePreset::Custom {
             applet.custom_width_input = applet.config.custom_width.to_string();
             applet.custom_height_input = applet.config.custom_height.to_string();
         }
-        for id in &pinned_apps {
-            applet.cached_pinned_ids.borrow_mut().insert(id.clone());
-        }
-        for id in &applet.config.favourites {
-            applet.cached_fav_ids.borrow_mut().insert(id.clone());
-        }
         applet.rebuild_nav_model();
 
-        (applet, Task::none())
+        (applet, reload_apps())
     }
 
     fn view(&self) -> Element<'_, Message> {
-        // Standalone window mode: the main window IS the menu.
         if self.is_window_mode {
             return self.build_menu_view(false);
         }
@@ -257,18 +264,19 @@ impl Application for Applet {
         let suggested = self.core.applet.suggested_size(false);
         let icon_size = suggested.0.min(suggested.1).saturating_sub(6);
         let symbolic = self.config.panel_icon_symbolic;
-        let icon: Element<'_, Message> = cosmic::widget::icon(self.cached_panel_icon(icon_name, symbolic))
-        .size(icon_size)
-        .class(if symbolic {
-            cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
-                cosmic::iced::widget::svg::Style {
-                    color: Some(theme.cosmic().background(theme.transparent).on.into()),
-                }
-            }))
-        } else {
-            cosmic::theme::Svg::default()
-        })
-        .into();
+        let icon: Element<'_, Message> =
+            cosmic::widget::icon(self.cached_panel_icon(icon_name, symbolic))
+                .size(icon_size)
+                .class(if symbolic {
+                    cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
+                        cosmic::iced::widget::svg::Style {
+                            color: Some(theme.cosmic().background(theme.transparent).on.into()),
+                        }
+                    }))
+                } else {
+                    cosmic::theme::Svg::default()
+                })
+                .into();
         self.core
             .applet
             .button_from_element(icon, false)
@@ -283,42 +291,26 @@ impl Application for Applet {
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
-            Message::Surface(a) => {
+            Message::Surface(action) => {
                 return cosmic::task::message(cosmic::Action::Cosmic(cosmic::app::Action::Surface(
-                    a,
+                    action,
                 )));
             }
             Message::TogglePopup => {
-                if let Some(p) = self.popup.take() {
-                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))));
+                if let Some(popup) = self.popup.take() {
+                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(
+                        popup,
+                    ))));
                 }
                 self.search_field.clear();
                 self.search_active = false;
                 self.selected_index = None;
-                self.grid_scroll_y = 0.0;
-                self.grid_viewport_h = 0.0;
+                self.app_scroll_y = 0.0;
+                self.app_viewport_height = 0.0;
                 self.sidebar_collapsed = self.config.sidebar_collapsed;
-                // Apps are kept up to date by the periodic RefreshApps subscription.
                 self.available_applications = self.all_applications.clone();
 
-                // Apply default category from config — resolve the stored key
-                // against the categories actually shown in the sidebar.
-                self.selected_category = Some(match self.config.default_category.as_str() {
-                    "favourites"
-                        if self.config.show_favourites && !self.config.favourites.is_empty() =>
-                    {
-                        ApplicationCategory::favourites()
-                    }
-                    "recents" if self.config.show_recents && !self.config.recents.is_empty() => {
-                        ApplicationCategory::recents()
-                    }
-                    key => self
-                        .available_categories
-                        .iter()
-                        .find(|cat| cat.key == key)
-                        .cloned()
-                        .unwrap_or_else(ApplicationCategory::all),
-                });
+                self.select_default_category();
                 self.apply_category_filter();
                 self.rebuild_nav_model();
 
@@ -341,8 +333,6 @@ impl Application for Applet {
                             None,
                             None,
                         );
-                        // Use canonical anchor/gravity from get_popup_settings,
-                        // but override size and size_limits for our configurable menu.
                         popup_settings.positioner.size = Some((popup_width, popup_height));
                         popup_settings.positioner.size_limits = Limits::NONE
                             .min_width(max_width)
@@ -361,104 +351,58 @@ impl Application for Applet {
                 Task::none()
             }
             Message::ClosePopup => {
-                if let Some(p) = self.popup.take() {
-                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))));
+                if let Some(popup) = self.popup.take() {
+                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(
+                        popup,
+                    ))));
                 }
                 Task::none()
             }
             Message::OpenWindow => {
-                // The applet runs on the panel's proxied Wayland connection:
-                // any toplevel created here is embedded at (0,0) inside the
-                // panel instead of reaching the compositor. Launch a separate
-                // process so the menu opens as a real window on the actual
-                // compositor, then close the popup.
+                // Toplevels created through the applet's proxied connection are
+                // embedded in the panel, so standalone mode needs a new process.
                 let exe = std::env::current_exe()
                     .unwrap_or_else(|_| std::path::PathBuf::from("cosmic-kickoff-launcher"));
-                if let Err(err) = std::process::Command::new(exe).arg("--window").spawn() {
-                    tracing::warn!("Failed to launch menu window: {err}");
+                let mut command = std::process::Command::new(exe);
+                command.arg("--window");
+                let spawn = launch::spawn_command(command);
+                if let Some(popup) = self.popup.take() {
+                    return Task::batch([
+                        spawn,
+                        Task::done(cosmic::Action::App(Message::Surface(destroy_popup(popup)))),
+                    ]);
                 }
-                if let Some(p) = self.popup.take() {
-                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p))));
-                }
-                Task::none()
+                spawn
             }
             Message::SearchInput(input) => {
-                // Guard: skip if input hasn't changed.
                 if input == self.search_field {
                     return Task::none();
                 }
-                self.search_field = input.clone();
+                self.search_field = input;
                 self.selected_index = None;
-                self.grid_scroll_y = 0.0;
-                self.available_applications = if input.is_empty() {
+                self.available_applications = if self.search_field.is_empty() {
                     self.all_applications.clone()
                 } else {
-                    apps::filter_apps(&self.all_applications, &input)
+                    apps::filter_apps(&self.all_applications, &self.search_field)
                 };
-                // Keep "All Applications" selected while searching
-                self.selected_category = Some(ApplicationCategory::all());
-                let all_entity = self.nav_model.iter().find(|&entity| {
-                    self.nav_model
-                        .data::<ApplicationCategory>(entity)
-                        .map_or(false, |cat| cat.key == "all")
-                });
-                if let Some(entity) = all_entity {
-                    self.nav_model.activate(entity);
-                }
-                self.reset_grid_scroll()
+                self.select_all_category();
+                self.reset_app_scroll()
             }
             Message::SearchCleared => {
-                self.search_field.clear();
                 self.search_active = false;
-                self.selected_index = None;
-                self.available_applications = self.all_applications.clone();
-                self.selected_category = Some(ApplicationCategory::all());
-                // Find and activate the "All" entity
-                let all_entity = self.nav_model.iter().find(|&entity| {
-                    self.nav_model
-                        .data::<ApplicationCategory>(entity)
-                        .map_or(false, |cat| cat.key == "all")
-                });
-                if let Some(entity) = all_entity {
-                    self.nav_model.activate(entity);
-                }
-                self.reset_grid_scroll()
+                self.show_all_apps();
+                self.reset_app_scroll()
             }
             Message::ToggleSearch => {
                 self.search_active = !self.search_active;
+                self.show_all_apps();
+                let reset = self.reset_app_scroll();
                 if self.search_active {
-                    self.search_field.clear();
-                    self.selected_index = None;
-                    self.available_applications = self.all_applications.clone();
-                    // Keep "All Applications" selected in sidebar
-                    self.selected_category = Some(ApplicationCategory::all());
-                    let all_entity = self.nav_model.iter().find(|&entity| {
-                        self.nav_model
-                            .data::<ApplicationCategory>(entity)
-                            .map_or(false, |cat| cat.key == "all")
-                    });
-                    if let Some(entity) = all_entity {
-                        self.nav_model.activate(entity);
-                    }
                     let focus_id = (*SEARCH_ID).clone();
                     let focus = cosmic::widget::text_input::focus(focus_id);
-                    let reset = self.reset_grid_scroll();
                     return Task::batch([focus, reset]);
                 }
-                // Closing search — restore "All Applications"
-                self.search_field.clear();
-                self.selected_index = None;
-                self.available_applications = self.all_applications.clone();
-                self.selected_category = Some(ApplicationCategory::all());
-                let all_entity = self.nav_model.iter().find(|&entity| {
-                    self.nav_model
-                        .data::<ApplicationCategory>(entity)
-                        .map_or(false, |cat| cat.key == "all")
-                });
-                if let Some(entity) = all_entity {
-                    self.nav_model.activate(entity);
-                }
-                self.reset_grid_scroll()
+                reset
             }
             Message::CategoryActivated(entity) => {
                 self.hovered_app_index = None;
@@ -470,12 +414,12 @@ impl Application for Applet {
                     self.selected_category = Some(cat.clone());
                 }
                 self.apply_category_filter();
-                self.reset_grid_scroll()
+                self.reset_app_scroll()
             }
-            Message::GridScrolled(y, viewport_h) => {
-                let scroll_changed = (self.grid_scroll_y - y).abs() > f32::EPSILON;
-                self.grid_scroll_y = y;
-                self.grid_viewport_h = viewport_h;
+            Message::AppsScrolled(y, viewport_height) => {
+                let scroll_changed = (self.app_scroll_y - y).abs() > f32::EPSILON;
+                self.app_scroll_y = y;
+                self.app_viewport_height = viewport_height;
                 if scroll_changed {
                     self.hovered_app_index = None;
                 }
@@ -485,7 +429,7 @@ impl Application for Applet {
                 self.hovered_app_index = Some(index);
                 Task::none()
             }
-            Message::AppUnhovered(_index) => {
+            Message::AppUnhovered => {
                 self.hovered_app_index = None;
                 Task::none()
             }
@@ -511,29 +455,13 @@ impl Application for Applet {
                 }
                 Task::none()
             }
-            Message::SelectNext => {
-                if self.available_applications.is_empty() {
-                    return Task::none();
-                }
-                match self.selected_index {
-                    None => self.selected_index = Some(0),
-                    Some(i) if i + 1 < self.available_applications.len() => {
-                        self.selected_index = Some(i + 1);
-                    }
-                    _ => {}
-                }
-                Task::none()
-            }
-            Message::SelectPrevious => {
-                match self.selected_index {
-                    Some(0) | None => self.selected_index = None,
-                    Some(i) => self.selected_index = Some(i - 1),
-                }
-                Task::none()
-            }
+            Message::SelectLeft => self.move_selection(-1),
+            Message::SelectRight => self.move_selection(1),
+            Message::SelectUp => self.move_selection(-(view::navigation_columns(self) as isize)),
+            Message::SelectDown => self.move_selection(view::navigation_columns(self) as isize),
             Message::LaunchSelected => {
-                if let Some(i) = self.selected_index {
-                    if let Some(app) = self.available_applications.get(i).cloned() {
+                if let Some(index) = self.selected_index {
+                    if let Some(app) = self.available_applications.get(index).cloned() {
                         return self.launch_application(app);
                     }
                 }
@@ -542,13 +470,11 @@ impl Application for Applet {
             Message::LayoutMode(mode) => {
                 self.config.layout_mode = mode;
                 self.save_config();
-                self.reset_grid_scroll()
+                self.reset_app_scroll()
             }
             Message::ToggleSidebar => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
-                // The category-title row appears/disappears above the app grid,
-                // changing the grid viewport height — re-sync the scroll state.
-                self.reset_grid_scroll()
+                self.reset_app_scroll()
             }
             Message::ToggleSettings => {
                 self.show_settings = !self.show_settings;
@@ -556,10 +482,7 @@ impl Application for Applet {
             }
             Message::SetSizePreset(preset) => {
                 if preset == SizePreset::Custom {
-                    // Show the custom-size inputs without changing the menu
-                    // size yet — the size changes only when Apply is pressed.
                     self.custom_size_selected = true;
-                    // Prefill with the last applied custom values, if any.
                     if self.config.custom_width > 0.0 && self.custom_width_input.is_empty() {
                         self.custom_width_input = self.config.custom_width.to_string();
                     }
@@ -568,8 +491,6 @@ impl Application for Applet {
                     }
                     Task::none()
                 } else {
-                    // Non-custom presets apply immediately and ignore custom
-                    // dimensions — clear them so the preset's own size wins.
                     self.custom_size_selected = false;
                     self.config.size_preset = preset;
                     self.config.custom_width = 0.0;
@@ -577,8 +498,6 @@ impl Application for Applet {
                     self.custom_width_input.clear();
                     self.custom_height_input.clear();
                     self.save_config();
-                    // Resizing the popup does not invalidate the app list or
-                    // its scroll model; preserve the user's current position.
                     Task::none()
                 }
             }
@@ -591,28 +510,21 @@ impl Application for Applet {
                 Task::none()
             }
             Message::ApplyCustomSize => {
-                // Parse both inputs; valid values are clamped to the same
-                // bounds as config sanitization and echoed back to the inputs.
-                let mut applied = false;
-                if let Ok(w) = self.custom_width_input.trim().parse::<f32>() {
-                    let w = w.max(400.0);
-                    self.config.custom_width = w;
-                    self.custom_width_input = w.to_string();
-                    applied = true;
-                }
-                if let Ok(h) = self.custom_height_input.trim().parse::<f32>() {
-                    let h = h.max(300.0);
-                    self.config.custom_height = h;
-                    self.custom_height_input = h.to_string();
-                    applied = true;
-                }
-                if applied {
+                let parsed = self
+                    .custom_width_input
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .zip(self.custom_height_input.trim().parse::<f32>().ok())
+                    .and_then(|(width, height)| validated_custom_size(width, height));
+                if let Some((width, height)) = parsed {
+                    self.config.custom_width = width;
+                    self.config.custom_height = height;
+                    self.custom_width_input = width.to_string();
+                    self.custom_height_input = height.to_string();
                     self.custom_size_selected = false;
                     self.config.size_preset = SizePreset::Custom;
                     self.save_config();
-                    // The view rebuilds with the new popup size, which the
-                    // popup's autosize limits propagate to the compositor.
-                    // Keep the current scroll position while it resizes.
                     Task::none()
                 } else {
                     Task::none()
@@ -646,7 +558,8 @@ impl Application for Applet {
                 Task::none()
             }
             Message::ToggleShowBottomBarPowerActions => {
-                self.config.show_bottom_bar_power_actions = !self.config.show_bottom_bar_power_actions;
+                self.config.show_bottom_bar_power_actions =
+                    !self.config.show_bottom_bar_power_actions;
                 self.save_config();
                 Task::none()
             }
@@ -659,10 +572,7 @@ impl Application for Applet {
                     COSMIC_SETTINGS_APP_ID => "cosmic-settings",
                     _ => return Task::none(),
                 };
-                if let Err(e) = std::process::Command::new(program).spawn() {
-                    tracing::warn!("Failed to launch '{}': {}", program, e);
-                }
-                Task::none()
+                launch::spawn_command(std::process::Command::new(program))
             }
             Message::ToggleSidebarDefault => {
                 self.config.sidebar_collapsed = !self.config.sidebar_collapsed;
@@ -689,18 +599,18 @@ impl Application for Applet {
                         self.config.default_category = "favourites".into();
                         self.save_config();
                     }
-                    // Rebuild nav to show/hide Favourites entry
                     self.rebuild_nav_model();
-                    // If viewing favourites and unfavourited, refresh list
-                    if let Some(ref cat) = self.selected_category {
-                        if cat.key == "favourites" {
-                            let mut favs = apps::filter_by_ids(
-                                &self.all_applications,
-                                &self.config.favourites,
-                            );
-                            favs.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
-                            self.available_applications = favs;
-                        }
+                    if self
+                        .selected_category
+                        .as_ref()
+                        .is_some_and(|category| category.key == "favourites")
+                    {
+                        let mut favourites = apps::filter_by_ids(
+                            &self.all_applications,
+                            &self.config.favourites,
+                        );
+                        favourites.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
+                        self.available_applications = favourites;
                     }
                 }
                 Task::none()
@@ -722,41 +632,23 @@ impl Application for Applet {
                 Task::none()
             }
             Message::PowerAction(action) => {
-                if let Some(p) = self.popup.take() {
+                if let Some(popup) = self.popup.take() {
                     return Task::batch([
-                        Task::done(cosmic::Action::App(Message::Surface(destroy_popup(p)))),
+                        Task::done(cosmic::Action::App(Message::Surface(destroy_popup(popup)))),
                         power::execute(action),
                     ]);
                 }
                 power::execute(action)
             }
             Message::PowerActionDone => Task::none(),
+            Message::ActivationToken(update) => self.handle_activation_token(update),
+            Message::LaunchFinished => Task::none(),
             Message::RefreshApps => {
                 if self.app_refresh_in_progress {
                     return Task::none();
                 }
-                let current = apps::list_desktop_ids();
-                if current == self.known_desktop_ids {
-                    return Task::none();
-                }
-                // Desktop files changed — reload in background, then update state.
                 self.app_refresh_in_progress = true;
-                return Task::future(async move {
-                    let (apps, categories) = match tokio::task::spawn_blocking(|| {
-                        let a = apps::load_apps();
-                        let c = apps::load_categories(&a);
-                        (a, c)
-                    })
-                    .await
-                    {
-                        Ok((a, c)) => (a, c),
-                        Err(err) => {
-                            tracing::warn!("App reload task failed: {err}");
-                            return cosmic::action::app(Message::RefreshAppsFailed);
-                        }
-                    };
-                    cosmic::action::app(Message::AppsRefreshed(apps, categories))
-                });
+                reload_apps()
             }
             Message::RefreshAppsFailed => {
                 self.app_refresh_in_progress = false;
@@ -766,12 +658,15 @@ impl Application for Applet {
                 self.app_refresh_in_progress = false;
                 self.all_applications = apps;
                 self.available_categories = categories;
-                self.known_desktop_ids = apps::list_desktop_ids();
+                let pinned_apps = dock::load_pinned_apps_with_defaults();
+                self.cached_pinned_ids.replace(pinned_apps.iter().cloned().collect());
+                self.pinned_apps = pinned_apps;
+                if self.is_window_mode && self.selected_category.is_none() {
+                    self.select_default_category();
+                }
                 self.rebuild_nav_model();
-                // If popup is open, re-apply current view filters.
-                if self.popup.is_some() {
+                if self.popup.is_some() || self.is_window_mode {
                     self.apply_category_filter();
-                    // Deselect if the index is now out of bounds.
                     if let Some(idx) = self.selected_index {
                         if idx >= self.available_applications.len() {
                             self.selected_index = None;
@@ -785,12 +680,14 @@ impl Application for Applet {
                 config.sanitize();
                 self.sidebar_collapsed = config.sidebar_collapsed;
                 self.config = config;
+                self.cached_fav_ids
+                    .replace(self.config.favourites.iter().cloned().collect());
                 if self.config.size_preset == SizePreset::Custom {
                     self.custom_width_input = self.config.custom_width.to_string();
                     self.custom_height_input = self.config.custom_height.to_string();
                 }
                 self.rebuild_nav_model();
-                if self.popup.is_some() {
+                if self.popup.is_some() || self.is_window_mode {
                     self.apply_category_filter();
                 }
                 Task::none()
@@ -802,18 +699,26 @@ impl Application for Applet {
         Some(Message::PopupClosed(id))
     }
 
+    fn on_window_resize(&mut self, id: Id, width: f32, height: f32) {
+        if self.is_window_mode && self.core.main_window_is(id) {
+            self.window_width = width;
+            self.window_height = height;
+            self.app_viewport_height = 0.0;
+        }
+    }
+
     fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
         use cosmic::iced::time;
         use std::time::Duration;
 
         let mut subs = Vec::new();
 
-        // Periodic app-list refresh — detects newly installed/removed apps.
+        subs.push(activation_token_subscription(APP_ID).map(Message::ActivationToken));
+
         subs.push(
-            time::every(Duration::from_secs(10)).map(|_| Message::RefreshApps),
+            time::every(Duration::from_secs(30)).map(|_| Message::RefreshApps),
         );
 
-        // Keyboard shortcuts — only when the popup or a standalone window is open.
         if self.popup.is_some() || self.is_window_mode {
             subs.push(listen_raw(|event, status, _id| {
                 let cosmic::iced::Event::Keyboard(keyboard::Event::KeyPressed {
@@ -830,28 +735,25 @@ impl Application for Applet {
                 match key {
                     Named::Escape => Some(Message::ClosePopup),
                     Named::Enter => Some(Message::LaunchSelected),
-                    // Only when not captured — don't fight text-input caret movement.
-                    Named::ArrowDown | Named::ArrowRight
-                        if status == event::Status::Ignored =>
-                    {
-                        Some(Message::SelectNext)
+                    Named::ArrowLeft if status == event::Status::Ignored => {
+                        Some(Message::SelectLeft)
                     }
-                    Named::ArrowUp | Named::ArrowLeft if status == event::Status::Ignored => {
-                        Some(Message::SelectPrevious)
+                    Named::ArrowRight if status == event::Status::Ignored => {
+                        Some(Message::SelectRight)
+                    }
+                    Named::ArrowUp if status == event::Status::Ignored => Some(Message::SelectUp),
+                    Named::ArrowDown if status == event::Status::Ignored => {
+                        Some(Message::SelectDown)
                     }
                     _ => None,
                 }
             }));
         }
 
-        // Watch for application configuration changes.
         subs.push(
             self.core()
                 .watch_config::<AppletConfig>(Self::APP_ID)
                 .map(|update| {
-                    // for why in update.errors {
-                    //     tracing::error!(?why, "app config error");
-                    // }
                     Message::UpdateConfig(update.config)
                 }),
         );
@@ -909,9 +811,7 @@ impl Application for Applet {
 }
 
 impl Applet {
-    /// Persist the config through cosmic-config (propagates to other instances
-    /// via cosmic-settings-daemon thanks to the `dbus-config` feature).
-    pub fn save_config(&self) {
+    pub(crate) fn save_config(&self) {
         if let Some(context) = &self.config_context {
             if let Err(err) = self.config.write_entry(context) {
                 tracing::warn!("Failed to save config: {err}");
@@ -919,17 +819,15 @@ impl Applet {
         }
     }
 
-    /// Re-apply the current search/category filter to `available_applications`.
     fn apply_category_filter(&mut self) {
         if self.search_active {
-            let input = self.search_field.clone();
-            self.available_applications = if input.is_empty() {
+            self.available_applications = if self.search_field.is_empty() {
                 self.all_applications.clone()
             } else {
-                apps::filter_apps(&self.all_applications, &input)
+                apps::filter_apps(&self.all_applications, &self.search_field)
             };
-        } else if let Some(cat) = self.selected_category.clone() {
-            self.available_applications = match cat.key.as_str() {
+        } else if let Some(category) = &self.selected_category {
+            self.available_applications = match category.key.as_str() {
                 "favourites" => {
                     let mut favs =
                         apps::filter_by_ids(&self.all_applications, &self.config.favourites);
@@ -937,23 +835,54 @@ impl Applet {
                     favs
                 }
                 "recents" => apps::filter_by_ids(&self.all_applications, &self.config.recents),
-                _ => apps::filter_apps_by_category(&self.all_applications, &cat),
+                _ => apps::filter_apps_by_category(&self.all_applications, category),
             };
         } else {
             self.available_applications = self.all_applications.clone();
         }
     }
 
-    /// Reset the app-grid scroll position and snap the scrollable back to the
-    /// top, keeping the tracked offset in sync with the widget's internal one.
-    /// The viewport height is also forgotten so the safe fallback (menu height)
-    /// is used until the next scroll event re-measures it — this avoids a stale
-    /// (smaller) viewport rendering a blank bottom after the layout changes.
-    pub fn reset_grid_scroll(&mut self) -> Task<Message> {
-        self.grid_scroll_y = 0.0;
-        self.grid_viewport_h = 0.0;
+    fn select_default_category(&mut self) {
+        self.selected_category = Some(match self.config.default_category.as_str() {
+            "favourites" if self.config.show_favourites && !self.config.favourites.is_empty() => {
+                ApplicationCategory::favourites()
+            }
+            "recents" if self.config.show_recents && !self.config.recents.is_empty() => {
+                ApplicationCategory::recents()
+            }
+            key => self
+                .available_categories
+                .iter()
+                .find(|category| category.key == key)
+                .cloned()
+                .unwrap_or_else(ApplicationCategory::all),
+        });
+    }
+
+    fn select_all_category(&mut self) {
+        self.selected_category = Some(ApplicationCategory::all());
+        let all_entity = self.nav_model.iter().find(|&entity| {
+            self.nav_model
+                .data::<ApplicationCategory>(entity)
+                .is_some_and(|category| category.key == "all")
+        });
+        if let Some(entity) = all_entity {
+            self.nav_model.activate(entity);
+        }
+    }
+
+    fn show_all_apps(&mut self) {
+        self.search_field.clear();
+        self.selected_index = None;
+        self.available_applications = self.all_applications.clone();
+        self.select_all_category();
+    }
+
+    pub(crate) fn reset_app_scroll(&mut self) -> Task<Message> {
+        self.app_scroll_y = 0.0;
+        self.app_viewport_height = 0.0;
         cosmic::iced::widget::scrollable::snap_to(
-            (*SCROLLABLE_ID).clone(),
+            (*APP_SCROLL_ID).clone(),
             cosmic::iced::widget::scrollable::RelativeOffset {
                 x: Some(0.0),
                 y: Some(0.0),
@@ -961,7 +890,38 @@ impl Applet {
         )
     }
 
-    pub fn cached_icon(&self, app: &ApplicationEntry, size: f32) -> cosmic::widget::icon::Icon {
+    fn move_selection(&mut self, offset: isize) -> Task<Message> {
+        let len = self.available_applications.len();
+        if len == 0 {
+            self.selected_index = None;
+            return Task::none();
+        }
+        let current = self.selected_index.unwrap_or(0);
+        let selected = current.saturating_add_signed(offset).min(len - 1);
+        self.selected_index = Some(selected);
+
+        let columns = view::navigation_columns(self).max(1);
+        let rows = len.div_ceil(columns);
+        let row = selected / columns;
+        let relative_y = if rows <= 1 {
+            0.0
+        } else {
+            row as f32 / (rows - 1) as f32
+        };
+        cosmic::iced::widget::scrollable::snap_to(
+            (*APP_SCROLL_ID).clone(),
+            cosmic::iced::widget::scrollable::RelativeOffset {
+                x: Some(0.0),
+                y: Some(relative_y),
+            },
+        )
+    }
+
+    pub(crate) fn cached_icon(
+        &self,
+        app: &ApplicationEntry,
+        size: f32,
+    ) -> cosmic::widget::icon::Icon {
         let size_u16 = size as u16;
         let icon_name = app.icon.clone().unwrap_or_default();
         let key = (icon_name, size_u16);
@@ -1002,7 +962,6 @@ impl Applet {
 
         self.nav_model.clear();
 
-        // "All Applications" entry
         let all_icon = cosmic::widget::icon::from_name("user-home-symbolic")
             .symbolic(true)
             .size(16)
@@ -1013,7 +972,6 @@ impl Applet {
             .icon(all_icon)
             .data(ApplicationCategory::all());
 
-        // "Favourites" entry (if any and enabled)
         if self.config.show_favourites && !self.config.favourites.is_empty() {
             let fav_icon = cosmic::widget::icon::from_name("starred-symbolic")
                 .symbolic(true)
@@ -1026,7 +984,6 @@ impl Applet {
                 .data(ApplicationCategory::favourites());
         }
 
-        // "Recents" entry (if any and enabled)
         if self.config.show_recents && !self.config.recents.is_empty() {
             let rec_icon = cosmic::widget::icon::from_name("document-open-recent-symbolic")
                 .symbolic(true)
@@ -1039,7 +996,6 @@ impl Applet {
                 .data(ApplicationCategory::recents());
         }
 
-        // Category entries (with divider above the first one)
         for (i, cat) in self.available_categories.iter().enumerate() {
             let cat_icon = cosmic::widget::icon::from_name(std::sync::Arc::from(
                 cat.icon_name.as_str(),
@@ -1059,7 +1015,6 @@ impl Applet {
             let _ = entry;
         }
 
-        // Restore the sidebar selection instead of always jumping to All Applications.
         let restore_entity = self.nav_model.iter().find(|&entity| {
             self.nav_model
                 .data::<ApplicationCategory>(entity)

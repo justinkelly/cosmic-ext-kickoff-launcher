@@ -5,15 +5,23 @@
   <project_license>GPL-3.0-only</project_license>
   <name>Kickoff Launcher for COSMIC</name>
   <summary>A KDE-style application menu</summary>
+  <description>
+    <p>
+      Browse, search, favourite, pin, and launch installed applications from a
+      keyboard-, pointer-, and touch-friendly COSMIC panel menu.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/pop-os/cosmic-epoch</url>
+  <developer id="com.github.cosmic-kickoff-launcher">
+    <name>Kickoff Launcher contributors</name>
+  </developer>
   <launchable type="desktop-id">com.github.cosmic-kickoff-launcher.desktop</launchable>
   <provides>
     <id>com.system76.CosmicApplet</id>
-    <binaries>
-      <binary>cosmic-kickoff-launcher</binary>
-    </binaries>
+    <binary>cosmic-kickoff-launcher</binary>
   </provides>
   <requires>
-    <display_length compare="ge">360</display_length>
+    <display_length compare="ge">400</display_length>
   </requires>
   <supports>
     <control>keyboard</control>
@@ -21,10 +29,18 @@
     <control>touch</control>
   </supports>
   <categories>
+    <category>Utility</category>
     <category>COSMIC</category>
   </categories>
   <keywords>
     <keyword>COSMIC</keyword>
   </keywords>
+  <releases>
+    <release version="0.1.0" date="2026-08-30">
+      <description>
+        <p>Initial development release.</p>
+      </description>
+    </release>
+  </releases>
   <content_rating type="oars-1.1" />
 </component>

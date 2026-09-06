@@ -4,19 +4,22 @@ use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, Cosmi
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub(crate) const MIN_CUSTOM_WIDTH: f32 = 400.0;
+pub(crate) const MAX_CUSTOM_WIDTH: f32 = 2_000.0;
+pub(crate) const MIN_CUSTOM_HEIGHT: f32 = 300.0;
+pub(crate) const MAX_CUSTOM_HEIGHT: f32 = 1_600.0;
+
 /// Layout mode for the application listing.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum LayoutMode {
-    /// Icon grid layout (all apps)
+pub(crate) enum LayoutMode {
     #[default]
     Grid,
-    /// List layout with cards (all apps)
     List,
-    /// Hybrid: Favourites + Recents in grid, everything else in list
+    /// Favourites and recents use the grid; other categories use the list.
     Hybrid,
 }
 
-// Custom serde: accepts both bool (legacy configs) and string (current configs).
+// Older releases stored this setting as a boolean.
 impl Serialize for LayoutMode {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(match self {
@@ -52,7 +55,7 @@ impl<'de> Deserialize<'de> for LayoutMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SizePreset {
+pub(crate) enum SizePreset {
     /// Small landscape 600×480.
     Small,
     /// Medium landscape 800×640.
@@ -68,7 +71,7 @@ pub enum SizePreset {
     Square,
     /// Portrait 600×700.
     Portrait,
-    /// User-defined size via custom_width / custom_height.
+    /// User-defined size.
     Custom,
 }
 
@@ -82,7 +85,7 @@ impl SizePreset {
             SizePreset::Tall => 500.0,
             SizePreset::Square => 600.0,
             SizePreset::Portrait => 600.0,
-            SizePreset::Custom => 0.0, // uses custom_width
+            SizePreset::Custom => 0.0,
         }
     }
 
@@ -95,7 +98,7 @@ impl SizePreset {
             SizePreset::Tall => 900.0,
             SizePreset::Square => 600.0,
             SizePreset::Portrait => 700.0,
-            SizePreset::Custom => 0.0, // uses custom_height
+            SizePreset::Custom => 0.0,
         }
     }
 
@@ -110,31 +113,23 @@ impl SizePreset {
         SizePreset::Custom,
     ];
 
-    /// Override pixel width (0 = use preset).
     pub fn effective_width(self, custom: f32) -> f32 {
-        match self {
-            SizePreset::Custom => custom.max(400.0),
-            _ => {
-                if custom > 0.0 {
-                    custom
-                } else {
-                    self.width()
-                }
-            }
+        if custom.is_finite() && custom > 0.0 {
+            custom.clamp(MIN_CUSTOM_WIDTH, MAX_CUSTOM_WIDTH)
+        } else if self == SizePreset::Custom {
+            MIN_CUSTOM_WIDTH
+        } else {
+            self.width()
         }
     }
 
-    /// Override pixel height (0 = use preset).
     pub fn effective_height(self, custom: f32) -> f32 {
-        match self {
-            SizePreset::Custom => custom.max(300.0),
-            _ => {
-                if custom > 0.0 {
-                    custom
-                } else {
-                    self.height()
-                }
-            }
+        if custom.is_finite() && custom > 0.0 {
+            custom.clamp(MIN_CUSTOM_HEIGHT, MAX_CUSTOM_HEIGHT)
+        } else if self == SizePreset::Custom {
+            MIN_CUSTOM_HEIGHT
+        } else {
+            self.height()
         }
     }
 }
@@ -143,22 +138,21 @@ impl SizePreset {
 /// live instances in sync via the `dbus-config` feature).
 #[derive(Debug, Clone, CosmicConfigEntry, Serialize, Deserialize, PartialEq)]
 #[version = 1]
-pub struct AppletConfig {
-    /// Layout mode: Grid, List, or Hybrid (Favs+Recents grid, rest list).
-    /// Stored as `use_grid` in TOML for backward compat (old bool → Grid/List).
+pub(crate) struct AppletConfig {
+    /// Stored as `use_grid` for compatibility with the old boolean setting.
     #[serde(rename = "use_grid", default)]
     pub layout_mode: LayoutMode,
-    /// Number of columns in the app grid
+    /// Maximum number of columns in the app grid.
     pub grid_columns: usize,
-    /// App icon size in pixels (24-56)
+    /// App icon size in pixels.
     pub icon_size: f32,
-    /// Menu size preset (Small / Medium / Large)
+    /// Menu size preset.
     pub size_preset: SizePreset,
-    /// Custom popup width override in pixels (0 = use size_preset)
+    /// Custom popup width in pixels, or zero to use the preset.
     pub custom_width: f32,
-    /// Custom popup height override in pixels (0 = use size_preset)
+    /// Custom popup height in pixels, or zero to use the preset.
     pub custom_height: f32,
-    /// Panel button icon name (empty = use default)
+    /// Panel button icon name, or an empty string to use the default.
     pub panel_icon: String,
     /// Use symbolic (monochrome) icon in the panel (false = full colour).
     pub panel_icon_symbolic: bool,
@@ -221,17 +215,15 @@ impl Default for AppletConfig {
 }
 
 impl AppletConfig {
-    /// Effective popup width (preset × override).
     pub fn max_width(&self) -> f32 {
         self.size_preset.effective_width(self.custom_width)
     }
 
-    /// Effective popup height (preset × override).
     pub fn max_height(&self) -> f32 {
         self.size_preset.effective_height(self.custom_height)
     }
 
-    /// Ensure values are within reasonable bounds (auto-upgrades stale configs).
+    /// Normalize values loaded from disk.
     pub fn sanitize(&mut self) {
         if !(3..=8).contains(&self.grid_columns) {
             self.grid_columns = 6;
@@ -239,27 +231,26 @@ impl AppletConfig {
         if !self.icon_size.is_finite() || !(24.0..=56.0).contains(&self.icon_size) {
             self.icon_size = 48.0;
         }
-        // Clamp custom dimensions to reasonable bounds. Non-finite values
-        // can otherwise propagate into iced's layout limits.
         if !self.custom_width.is_finite() || self.custom_width < 0.0 {
             self.custom_width = 0.0;
         } else if self.custom_width > 0.0 {
-            self.custom_width = self.custom_width.clamp(400.0, 2_000.0);
+            self.custom_width = self
+                .custom_width
+                .clamp(MIN_CUSTOM_WIDTH, MAX_CUSTOM_WIDTH);
         }
         if !self.custom_height.is_finite() || self.custom_height < 0.0 {
             self.custom_height = 0.0;
         } else if self.custom_height > 0.0 {
-            self.custom_height = self.custom_height.clamp(300.0, 1_600.0);
+            self.custom_height = self
+                .custom_height
+                .clamp(MIN_CUSTOM_HEIGHT, MAX_CUSTOM_HEIGHT);
         }
 
-        // Keep the persisted lists compact and bounded even when a config
-        // file was edited externally.
         deduplicate(&mut self.favourites);
         deduplicate(&mut self.recents);
         self.recents.truncate(self.max_recents);
     }
 
-    /// Record an app launch (adds to front of recents, trims to max).
     pub fn add_recent(&mut self, app_id: &str) {
         self.recents.retain(|id| id != app_id);
         self.recents.insert(0, app_id.to_string());
@@ -268,7 +259,6 @@ impl AppletConfig {
         }
     }
 
-    /// Toggle favourite status for an app. Returns the new state.
     pub fn toggle_favourite(&mut self, app_id: &str) -> bool {
         if let Some(pos) = self.favourites.iter().position(|id| id == app_id) {
             self.favourites.remove(pos);
@@ -279,7 +269,6 @@ impl AppletConfig {
         }
     }
 
-    /// Path of the legacy hand-rolled TOML config (pre-cosmic-config).
     fn legacy_config_path() -> Option<PathBuf> {
         let base = if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
             PathBuf::from(dir)
@@ -289,8 +278,6 @@ impl AppletConfig {
         Some(base.join("cosmic-kde-launcher").join("config.toml"))
     }
 
-    /// One-time migration from the legacy `~/.config/cosmic-kde-launcher/config.toml`
-    /// into the cosmic-config entry. Returns the migrated config on success.
     pub fn migrate_legacy(context: &cosmic_config::Config) -> Option<Self> {
         let path = Self::legacy_config_path()?;
         let contents = std::fs::read_to_string(&path).ok()?;
@@ -301,7 +288,6 @@ impl AppletConfig {
             return None;
         }
         tracing::info!("Migrated legacy config.toml to cosmic-config");
-        // Rename the legacy file so stale defaults can't resurrect old settings.
         if let Err(err) = std::fs::rename(&path, path.with_extension("toml.migrated")) {
             tracing::warn!("Failed to rename legacy config file: {err}");
         }
@@ -309,7 +295,35 @@ impl AppletConfig {
     }
 }
 
+pub(crate) fn validated_custom_size(width: f32, height: f32) -> Option<(f32, f32)> {
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some((
+        width.clamp(MIN_CUSTOM_WIDTH, MAX_CUSTOM_WIDTH),
+        height.clamp(MIN_CUSTOM_HEIGHT, MAX_CUSTOM_HEIGHT),
+    ))
+}
+
 fn deduplicate(values: &mut Vec<String>) {
     let mut seen = std::collections::HashSet::with_capacity(values.len());
     values.retain(|value| !value.is_empty() && seen.insert(value.clone()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_and_clamps_custom_size_atomically() {
+        assert_eq!(validated_custom_size(10.0, 9_000.0), Some((400.0, 1_600.0)));
+        assert_eq!(validated_custom_size(f32::NAN, 600.0), None);
+        assert_eq!(validated_custom_size(600.0, -1.0), None);
+    }
+
+    #[test]
+    fn effective_custom_size_never_exceeds_layout_limits() {
+        assert_eq!(SizePreset::Custom.effective_width(8_000.0), MAX_CUSTOM_WIDTH);
+        assert_eq!(SizePreset::Custom.effective_height(8_000.0), MAX_CUSTOM_HEIGHT);
+    }
 }

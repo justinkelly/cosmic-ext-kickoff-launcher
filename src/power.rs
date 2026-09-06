@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Session and power actions, executed via `org.freedesktop.login1` (D-Bus)
-//! with `cosmic-osd` as the primary path for actions that show a confirmation
-//! dialog.
+//! Session and power actions.
 
 use crate::app::Message;
 use crate::fl;
 use cosmic::app::Task;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PowerAction {
+pub(crate) enum PowerAction {
     Lock,
     Logout,
     Suspend,
@@ -38,7 +36,6 @@ impl PowerAction {
         }
     }
 
-    /// Bottom-bar actions matching the standard COSMIC session/power applet.
     pub const BOTTOM_BAR: [Self; 5] = [
         Self::Lock,
         Self::Logout,
@@ -56,11 +53,19 @@ mod login1 {
         default_path = "/org/freedesktop/login1"
     )]
     pub trait Manager {
-        fn lock_session(&self) -> zbus::Result<()>;
-        fn terminate_user(&self, uid: u32) -> zbus::Result<()>;
         fn suspend(&self, interactive: bool) -> zbus::Result<()>;
         fn reboot(&self, interactive: bool) -> zbus::Result<()>;
         fn power_off(&self, interactive: bool) -> zbus::Result<()>;
+    }
+
+    #[zbus::proxy(
+        interface = "org.freedesktop.login1.Session",
+        default_service = "org.freedesktop.login1",
+        default_path = "/org/freedesktop/login1/session/auto"
+    )]
+    pub trait Session {
+        fn lock(&self) -> zbus::Result<()>;
+        fn terminate(&self) -> zbus::Result<()>;
     }
 }
 
@@ -69,20 +74,20 @@ async fn manager() -> zbus::Result<login1::ManagerProxy<'static>> {
     login1::ManagerProxy::new(&connection).await
 }
 
-fn current_uid() -> Option<u32> {
-    // `UID` is a shell variable and often absent in GUI-launched sessions;
-    // read the real uid from the kernel instead.
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let uid_line = status.lines().find(|line| line.starts_with("Uid:"))?;
-    uid_line.split_whitespace().nth(1)?.parse().ok()
+async fn session() -> zbus::Result<login1::SessionProxy<'static>> {
+    let connection = zbus::connection::Builder::system()?.build().await?;
+    login1::SessionProxy::new(&connection).await
 }
 
-/// Try the `cosmic-osd` confirmation dialog first; fall back to login1.
-fn spawn_osd(action: &str) -> bool {
-    match std::process::Command::new("cosmic-osd").arg(action).spawn() {
-        Ok(_) => true,
+async fn run_osd(action: &str) -> bool {
+    match tokio::process::Command::new("cosmic-osd").arg(action).status().await {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            tracing::warn!("cosmic-osd {action} exited with {status}");
+            false
+        }
         Err(err) => {
-            tracing::warn!("Failed to spawn cosmic-osd {action}: {err}");
+            tracing::warn!("Failed to run cosmic-osd {action}: {err}");
             false
         }
     }
@@ -90,27 +95,24 @@ fn spawn_osd(action: &str) -> bool {
 
 async fn run_action(action: PowerAction) -> zbus::Result<()> {
     match action {
-        PowerAction::Lock => manager().await?.lock_session().await,
+        PowerAction::Lock => session().await?.lock().await,
         PowerAction::Logout => {
-            if spawn_osd("logout") {
+            if run_osd("log-out").await {
                 Ok(())
-            } else if let Some(uid) = current_uid() {
-                manager().await?.terminate_user(uid).await
             } else {
-                tracing::warn!("Cannot determine user id for logout");
-                Ok(())
+                session().await?.terminate().await
             }
         }
         PowerAction::Suspend => manager().await?.suspend(true).await,
         PowerAction::Restart => {
-            if spawn_osd("restart") {
+            if run_osd("restart").await {
                 Ok(())
             } else {
                 manager().await?.reboot(true).await
             }
         }
         PowerAction::Shutdown => {
-            if spawn_osd("shutdown") {
+            if run_osd("shutdown").await {
                 Ok(())
             } else {
                 manager().await?.power_off(true).await
@@ -125,11 +127,9 @@ async fn run(action: PowerAction) {
     }
 }
 
-/// Execute a power action in the background.
-pub fn execute(action: PowerAction) -> Task<Message> {
+pub(crate) fn execute(action: PowerAction) -> Task<Message> {
     Task::future(async move {
         run(action).await;
         cosmic::action::app(Message::PowerActionDone)
     })
 }
-

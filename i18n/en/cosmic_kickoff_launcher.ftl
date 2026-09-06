@@ -5,6 +5,7 @@ app-comment = A KDE-style application menu
 app-keywords = COSMIC;Kickoff;Menu;Launcher
 
 search-placeholder = Type to search…
+search = Search
 no-applications = No applications found.
 open-window = Open in Window
 

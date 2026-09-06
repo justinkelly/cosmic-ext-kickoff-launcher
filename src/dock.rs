@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Integration with the COSMIC dock: reading pinned apps and pinning/unpinning
-//! on explicit user request.
+//! Integration with the COSMIC dock.
 
 use crate::app::{Applet, COSMIC_FILES_APP_ID, COSMIC_SETTINGS_APP_ID};
 use cosmic::cosmic_config::{self, ConfigGet, ConfigSet};
 
 impl Applet {
-    /// Pin a desktop file to the COSMIC dock/tray. Returns the updated pinned list.
-    pub fn pin_app_to_dock(&self, desktop_id: &str) -> Vec<String> {
+    /// Pin a desktop file and return the updated dock configuration.
+    pub(crate) fn pin_app_to_dock(&self, desktop_id: &str) -> Vec<String> {
         let Ok(config) = cosmic_config::Config::new("com.system76.CosmicDock", 1) else {
             tracing::warn!("Cannot access CosmicDock config");
             return self.pinned_apps.clone();
@@ -25,8 +24,8 @@ impl Applet {
         pinned
     }
 
-    /// Unpin a desktop file from the COSMIC dock/tray. Returns the updated pinned list.
-    pub fn unpin_app_from_dock(&self, desktop_id: &str) -> Vec<String> {
+    /// Unpin a desktop file and return the updated dock configuration.
+    pub(crate) fn unpin_app_from_dock(&self, desktop_id: &str) -> Vec<String> {
         let Ok(config) = cosmic_config::Config::new("com.system76.CosmicDock", 1) else {
             tracing::warn!("Cannot access CosmicDock config");
             return self.pinned_apps.clone();
@@ -42,10 +41,8 @@ impl Applet {
     }
 }
 
-/// Read the pinned apps from the CosmicDock config. Cosmic Files and Settings
-/// are prepended as display defaults if they are not pinned. This is READ-ONLY:
-/// the user's dock configuration is never modified here.
-pub fn load_pinned_apps_with_defaults() -> Vec<String> {
+/// Read pinned apps, adding Files and Settings as local display defaults.
+pub(crate) fn load_pinned_apps_with_defaults() -> Vec<String> {
     const DEFAULTS: [&str; 2] = [COSMIC_FILES_APP_ID, COSMIC_SETTINGS_APP_ID];
     let Ok(config) = cosmic_config::Config::new("com.system76.CosmicDock", 1) else {
         return DEFAULTS.iter().map(|id| (*id).to_string()).collect();
