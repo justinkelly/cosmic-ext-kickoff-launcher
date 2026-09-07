@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
-app-title = Kickoff Launcher for COSMIC
+app-title = Kickoff Launcher for COSMIC™
 app-comment = A KDE-style application menu
 app-keywords = COSMIC;Kickoff;Menu;Launcher
 

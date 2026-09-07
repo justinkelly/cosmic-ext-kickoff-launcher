@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Compact one-colour Deskbar/shelf adaptation for tinted panel use. -->
+  <path fill-rule="evenodd" d="M18 26a6 6 0 0 1 6-6h24a6 6 0 0 1 6 6v16h18V18a6 6 0 0 1 6-6h25a6 6 0 0 1 6 6v31l7 4v58a7 7 0 0 1-7 7H39a7 7 0 0 1-7-7V98H19a7 7 0 0 1-7-7V49a7 7 0 0 1 6-7Zm8 8v8h14v-8Zm60-8v21h9V26ZM26 56v28h48V56Zm20 42v6h56V65H88v26a7 7 0 0 1-7 7Z"/>
+</svg>

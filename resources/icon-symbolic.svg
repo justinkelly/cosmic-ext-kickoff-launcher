@@ -1,0 +1,10 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Keep the centre transparent so symbolic recolouring preserves the app-grid motif. -->
+  <path fill="#000000" fill-rule="evenodd" d="M64 6a58 58 0 1 1 0 116A58 58 0 0 1 64 6Zm0 10a48 48 0 1 0 0 96 48 48 0 0 0 0-96Z"/>
+  <g fill="#000000">
+    <rect x="37" y="37" width="22" height="22" rx="5"/>
+    <rect x="69" y="37" width="22" height="22" rx="5"/>
+    <rect x="37" y="69" width="22" height="22" rx="5"/>
+    <rect x="69" y="69" width="22" height="22" rx="5"/>
+  </g>
+</svg>

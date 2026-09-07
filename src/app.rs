@@ -3,7 +3,7 @@
 //! Application model and COSMIC application implementation.
 
 use crate::config::{validated_custom_size, AppletConfig, LayoutMode, SizePreset};
-use crate::{apps, dock, fl, launch, power, view};
+use crate::{apps, dock, fl, launch, panel_icons, power, view};
 use cosmic::app::{Core, Task};
 use cosmic::applet::token::subscription::{
     activation_token_subscription, TokenRequest, TokenUpdate,
@@ -65,7 +65,8 @@ pub(crate) struct Applet {
     pub(crate) pinned_apps: Vec<String>,
     pub(crate) app_scroll_y: f32,
     pub(crate) app_viewport_height: f32,
-    pub(crate) icon_cache: RefCell<HashMap<(String, u16), cosmic::widget::icon::Icon>>,
+    pub(crate) icon_cache:
+        RefCell<HashMap<(Option<Arc<str>>, u16), cosmic::widget::icon::Icon>>,
     pub(crate) panel_icon_cache:
         RefCell<Option<(String, bool, cosmic::widget::icon::Handle)>>,
     pub(crate) cached_fav_ids: RefCell<HashSet<String>>,
@@ -253,7 +254,7 @@ impl Application for Applet {
             return self.build_menu_view(false);
         }
         let icon_name: &str = if self.config.panel_icon.is_empty() {
-            "cosmic-logo"
+            APP_ID
         } else {
             &self.config.panel_icon
         };
@@ -362,7 +363,7 @@ impl Application for Applet {
                 // Toplevels created through the applet's proxied connection are
                 // embedded in the panel, so standalone mode needs a new process.
                 let exe = std::env::current_exe()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("cosmic-kickoff-launcher"));
+                    .unwrap_or_else(|_| std::path::PathBuf::from("kickoff-launcher-for-cosmic"));
                 let mut command = std::process::Command::new(exe);
                 command.arg("--window");
                 let spawn = launch::spawn_command(command);
@@ -656,11 +657,14 @@ impl Application for Applet {
             }
             Message::AppsRefreshed(apps, categories) => {
                 self.app_refresh_in_progress = false;
-                self.all_applications = apps;
-                self.available_categories = categories;
                 let pinned_apps = dock::load_pinned_apps_with_defaults();
                 self.cached_pinned_ids.replace(pinned_apps.iter().cloned().collect());
                 self.pinned_apps = pinned_apps;
+                if self.all_applications == apps && self.available_categories == categories {
+                    return Task::none();
+                }
+                self.all_applications = apps;
+                self.available_categories = categories;
                 if self.is_window_mode && self.selected_category.is_none() {
                     self.select_default_category();
                 }
@@ -716,7 +720,7 @@ impl Application for Applet {
         subs.push(activation_token_subscription(APP_ID).map(Message::ActivationToken));
 
         subs.push(
-            time::every(Duration::from_secs(30)).map(|_| Message::RefreshApps),
+            time::every(Duration::from_secs(300)).map(|_| Message::RefreshApps),
         );
 
         if self.popup.is_some() || self.is_window_mode {
@@ -923,8 +927,7 @@ impl Applet {
         size: f32,
     ) -> cosmic::widget::icon::Icon {
         let size_u16 = size as u16;
-        let icon_name = app.icon.clone().unwrap_or_default();
-        let key = (icon_name, size_u16);
+        let key = (app.icon.clone(), size_u16);
         {
             let cache = self.icon_cache.borrow();
             if let Some(icon) = cache.get(&key) {
@@ -948,7 +951,11 @@ impl Applet {
         {
             return handle.clone();
         }
-        let handle = crate::icons::option_handle(name, symbolic);
+        let handle = panel_icons::handle(name, symbolic).unwrap_or_else(|| {
+            cosmic::widget::icon::from_name(Arc::<str>::from(name))
+                .symbolic(symbolic)
+                .handle()
+        });
         *cache = Some((name.to_string(), symbolic, handle.clone()));
         handle
     }

@@ -3,7 +3,7 @@
   <id>com.github.cosmic-kickoff-launcher</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
-  <name>Kickoff Launcher for COSMIC</name>
+  <name>Kickoff Launcher for COSMIC™</name>
   <summary>A KDE-style application menu</summary>
   <description>
     <p>
@@ -18,7 +18,7 @@
   <launchable type="desktop-id">com.github.cosmic-kickoff-launcher.desktop</launchable>
   <provides>
     <id>com.system76.CosmicApplet</id>
-    <binary>cosmic-kickoff-launcher</binary>
+    <binary>kickoff-launcher-for-cosmic</binary>
   </provides>
   <requires>
     <display_length compare="ge">400</display_length>

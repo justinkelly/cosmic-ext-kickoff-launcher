@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// A parsed desktop application entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApplicationEntry {
     /// Desktop file ID (for example, `firefox.desktop`).
     pub id: String,
@@ -18,7 +18,7 @@ pub(crate) struct ApplicationEntry {
     /// Raw desktop-entry executable command.
     pub exec: Option<String>,
     /// Icon name or path.
-    pub icon: Option<String>,
+    pub icon: Option<Arc<str>>,
     /// Categories from the desktop file.
     pub categories: Vec<String>,
     /// Generic name or description.
@@ -104,6 +104,9 @@ fn load_apps_from_dirs_for_desktops(
     let mut seen = HashSet::new();
     let mut apps = Vec::new();
     let mut total_files = 0usize;
+    let executable_paths: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
 
     for desktop_entry in fde::Iter::new(data_dirs.into_iter()).entries(Some(languages)) {
         total_files += 1;
@@ -130,7 +133,7 @@ fn load_apps_from_dirs_for_desktops(
         }
         if desktop_entry
             .try_exec()
-            .is_some_and(|program| !program_available(program))
+            .is_some_and(|program| !program_available(program, &executable_paths))
         {
             continue;
         }
@@ -158,7 +161,7 @@ fn load_apps_from_dirs_for_desktops(
             id,
             name,
             exec,
-            icon: desktop_entry.icon().map(ToOwned::to_owned),
+            icon: desktop_entry.icon().map(Arc::from),
             categories: desktop_entry
                 .categories()
                 .unwrap_or_default()
@@ -202,14 +205,14 @@ fn desktop_visible(entry: &fde::DesktopEntry, current_desktops: &[String]) -> bo
         .is_some_and(|desktops| desktops.into_iter().filter(|d| !d.is_empty()).any(matches))
 }
 
-fn program_available(program: &str) -> bool {
+fn program_available(program: &str, executable_paths: &[PathBuf]) -> bool {
     let candidate = PathBuf::from(program);
     if candidate.components().count() > 1 {
         return candidate.is_file();
     }
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|directory| directory.join(program).is_file())
-    })
+    executable_paths
+        .iter()
+        .any(|directory| directory.join(program).is_file())
 }
 
 /// Category groups in tie-break order.
@@ -282,7 +285,7 @@ const CATEGORY_GROUPS: &[(&str, &str, &[&str])] = &[
     ),
     (
         "System",
-        "applications-system-symbolic",
+        "computer-symbolic",
         &[
             "System", "Utility", "FileManager", "TerminalEmulator", "Monitor", "Security",
             "Accessibility", "Core", "ConsoleOnly",

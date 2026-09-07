@@ -5,8 +5,8 @@ mod apps;
 mod config;
 mod dock;
 mod i18n;
-mod icons;
 mod launch;
+mod panel_icons;
 mod power;
 mod view;
 

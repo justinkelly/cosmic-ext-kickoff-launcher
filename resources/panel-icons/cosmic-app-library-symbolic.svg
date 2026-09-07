@@ -1,0 +1,14 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+  <g fill="#000000">
+    <rect x="4.5" y="4.5" width="12" height="12" rx="3"/>
+    <rect x="18" y="4.5" width="12" height="12" rx="3"/>
+    <rect x="31.5" y="4.5" width="12" height="12" rx="3"/>
+    <rect x="4.5" y="18" width="12" height="12" rx="3"/>
+    <rect x="18" y="18" width="12" height="12" rx="3"/>
+    <rect x="31.5" y="18" width="12" height="12" rx="3"/>
+    <rect x="4.5" y="31.5" width="12" height="12" rx="3"/>
+    <rect x="18" y="31.5" width="12" height="12" rx="3"/>
+    <rect x="31.5" y="31.5" width="12" height="12" rx="3"/>
+  </g>
+</svg>

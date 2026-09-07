@@ -1,0 +1,21 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="20" y1="12" x2="108" y2="118" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#25C997"/>
+      <stop offset="1" stop-color="#087F8C"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="30" fill="url(#bg)"/>
+  <g fill="#ffffff">
+    <rect x="31" y="31" width="14" height="14" rx="4"/>
+    <rect x="57" y="31" width="14" height="14" rx="4"/>
+    <rect x="83" y="31" width="14" height="14" rx="4"/>
+    <rect x="31" y="57" width="14" height="14" rx="4"/>
+    <rect x="57" y="57" width="14" height="14" rx="4"/>
+    <rect x="83" y="57" width="14" height="14" rx="4"/>
+    <rect x="31" y="83" width="14" height="14" rx="4"/>
+    <rect x="57" y="83" width="14" height="14" rx="4"/>
+    <rect x="83" y="83" width="14" height="14" rx="4"/>
+  </g>
+</svg>

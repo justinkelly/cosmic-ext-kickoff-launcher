@@ -8,10 +8,10 @@ use crate::app::{
 };
 use crate::config::{LayoutMode, SizePreset};
 use crate::power::PowerAction;
-use crate::{apps, fl};
+use crate::{apps, fl, panel_icons};
 use cosmic::cosmic_theme::Spacing;
 use cosmic::iced::{
-    widget::{column, container, row, scrollable, stack, Space},
+    widget::{column, container, lazy, row, scrollable, stack, Space},
     Alignment, Color, Length, Limits,
 };
 use cosmic::theme;
@@ -22,32 +22,33 @@ use cosmic::widget::{
 use cosmic::Element;
 use apps::ApplicationEntry;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
 /// Panel icon names and display labels.
 const ICON_OPTIONS: &[(&str, &str)] = &[
-    ("com.system76.CosmicAppLibrary", "COSMIC App Library"),
-    ("cosmic-logo", "COSMIC"),
-    ("system76-logo", "System76"),
-    ("kde-official", "KDE (official)"),
-    ("kde-oxygen", "KDE Gear (Oxygen)"),
-    ("kde-plasma", "KDE Plasma"),
-    ("kubuntu", "Kubuntu"),
-    ("kde-neon", "KDE neon"),
-    ("kde-classic", "KDE 2 / Classic (legacy)"),
-    ("gnome-logo", "GNOME"),
+    (
+        "com.github.cosmic-kickoff-launcher",
+        "Kickoff Launcher",
+    ),
+    (panel_icons::COSMIC_APP_LIBRARY, "COSMIC App Library"),
+    (panel_icons::COSMIC_LOGO, "COSMIC Logo"),
+    (panel_icons::SYSTEM76_LOGO, "System76"),
+    (panel_icons::MOBILE_DOTS, "Mobile Dots"),
+    (panel_icons::APP_DRAWER, "App Drawer"),
+    (panel_icons::BENTO, "Bento"),
+    (panel_icons::HONEYCOMB, "Honeycomb"),
+    (panel_icons::XFCE_APPLICATIONS_MENU, "Xfce Applications"),
+    (panel_icons::HAIKU_DESKBAR, "Haiku Deskbar"),
+    (panel_icons::KDE2_KICKER, "KDE 2 (Kicker)"),
+    (panel_icons::KDE3_CRYSTAL, "KDE 3 (Crystal)"),
+    (panel_icons::KDE_CLASSIC, "KDE Classic (legacy)"),
+    (panel_icons::KDE_BREEZE, "KDE Plasma (Breeze)"),
+    (panel_icons::KDE_OXYGEN, "KDE Menu (Oxygen)"),
+    (panel_icons::DEBIAN, "Debian"),
     ("application-menu-symbolic", "App Menu"),
     ("open-menu-symbolic", "Menu"),
     ("start-here-symbolic", "Start"),
-    ("distributor-logo-debian", "Debian"),
-    ("start-here-ubuntu", "Ubuntu"),
-    ("distributor-logo-archlinux", "Arch Linux"),
-    ("start-here-fedora", "Fedora"),
-    ("distributor-logo-pop-os", "Pop!_OS"),
-    ("distributor-logo-manjaro", "Manjaro"),
-    ("distributor-logo-opensuse", "openSUSE"),
-    ("distributor-logo-linux-mint", "Linux Mint"),
-    ("rust-logo", "Rust"),
     ("applications-system-symbolic", "System"),
     ("applications-engineering-symbolic", "Dev"),
     ("applications-games-symbolic", "Games"),
@@ -70,7 +71,10 @@ static ICON_OPTION_LABELS: LazyLock<Vec<String>> = LazyLock::new(|| {
 static ICON_OPTION_HANDLES: LazyLock<Vec<icon::Handle>> = LazyLock::new(|| {
     ICON_OPTIONS
         .iter()
-        .map(|(name, _)| crate::icons::option_handle(name, false))
+        .map(|(name, _)| {
+            panel_icons::handle(name, false)
+                .unwrap_or_else(|| icon::from_name(*name).symbolic(false).handle())
+        })
         .collect()
 });
 
@@ -277,72 +281,6 @@ impl Applet {
             let content_h = rows_total as f32 * cell_height
                 + (rows_total.saturating_sub(1)) as f32 * space_s as f32;
 
-            let build_row = |row_idx: usize| -> Element<'_, Message> {
-                let start = row_idx * grid_columns;
-                let end = ((row_idx + 1) * grid_columns).min(self.available_applications.len());
-                let mut buttons: Vec<Element<'_, Message>> = (start..end)
-                    .map(|index| {
-                        let app = &self.available_applications[index];
-                        let icon = self.cached_icon(app, grid_icon_size);
-                        let name = truncate_name(&app.name, 32);
-                        let is_selected = self.selected_index == Some(index);
-                        let is_fav = fav_set.contains(app.id.as_str());
-                        let is_pinned = pinned_set.contains(app.id.as_str());
-                        let show_actions = self.hovered_app_index == Some(index);
-                        let content: Element<'_, Message> = {
-                            let inner = column![
-                                icon,
-                                cosmic::widget::text::caption(name)
-                                    .wrapping(cosmic::iced::widget::text::Wrapping::Word),
-                            ]
-                            .align_x(Alignment::Center)
-                            .spacing(space_xxs);
-                            let inner = container(inner)
-                                .center_x(Length::Fill)
-                                .align_y(Alignment::Start)
-                                .width(Length::Fill)
-                                .height(Length::Fill)
-                                .padding([space_xxs, 0, 0, 0]);
-                            if show_actions {
-                                stack![
-                                    inner,
-                                    container(app_action_row(index, is_fav, is_pinned))
-                                        .width(Length::Fill)
-                                        .height(Length::Fill)
-                                        .align_y(Alignment::Start)
-                                        .padding(0),
-                                ]
-                                .width(Length::Fill)
-                                .height(Length::Fill)
-                                .into()
-                            } else {
-                                inner.into()
-                            }
-                        };
-                        let btn = button::custom(content)
-                            .on_press(Message::LaunchApp(index))
-                            .class(app_grid_card_class(is_selected))
-                            .width(Length::Fill)
-                            .height(Length::Fixed(cell_height));
-
-                        mouse_area(btn)
-                            .on_enter(Message::AppHovered(index))
-                            .on_exit(Message::AppUnhovered)
-                            .into()
-                    })
-                    .collect();
-
-                let missing = grid_columns - buttons.len();
-                for _ in 0..missing {
-                    buttons.push(Space::new().width(Length::Fill).into());
-                }
-                row(buttons)
-                    .spacing(space_s)
-                    .width(Length::Fill)
-                    .align_y(Alignment::Start)
-                    .into()
-            };
-
             // Keep one row mounted above and below the viewport.
             let viewport_h = if self.app_viewport_height > 0.0 {
                 self.app_viewport_height
@@ -363,22 +301,78 @@ impl Applet {
                 .saturating_sub(1)
                 .min(rows_total.saturating_sub(1));
             last_row = (last_row + 1).min(rows_total.saturating_sub(1));
-            let mut rows: Vec<Element<'_, Message>> =
-                Vec::with_capacity(last_row - first_row + 3);
-            if first_row > 0 {
-                let top_h = (first_row as f32 * row_stride - space_s as f32).max(0.0);
-                rows.push(Space::new().height(Length::Fixed(top_h)).into());
-            }
-            for row_idx in first_row..=last_row {
-                rows.push(build_row(row_idx));
-            }
-            let bottom_h =
-                content_h - (last_row as f32 * row_stride + cell_height) - space_s as f32;
-            if bottom_h > 0.0 {
-                rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
-            }
+            let rows_key = visible_rows_key(
+                &self.available_applications,
+                first_row,
+                last_row,
+                grid_columns,
+                0,
+                space_xxs,
+                space_s,
+                self.selected_index,
+                self.hovered_app_index,
+                &fav_set,
+                &pinned_set,
+            );
+            let visible_apps: Vec<_> = (first_row * grid_columns
+                ..((last_row + 1) * grid_columns).min(self.available_applications.len()))
+                .map(|index| {
+                    let app = self.available_applications[index].clone();
+                    let state = AppCardState {
+                        index,
+                        is_favourite: fav_set.contains(app.id.as_str()),
+                        is_pinned: pinned_set.contains(app.id.as_str()),
+                        is_selected: self.selected_index == Some(index),
+                        show_actions: self.hovered_app_index == Some(index),
+                    };
+                    let icon = self.cached_icon(&app, grid_icon_size);
+                    (app, icon, state)
+                })
+                .collect();
+            let app_grid = lazy(rows_key, move |_| {
+                let mut rows: Vec<Element<'static, Message>> =
+                    Vec::with_capacity(last_row - first_row + 3);
+                if first_row > 0 {
+                    let top_h =
+                        (first_row as f32 * row_stride - space_s as f32).max(0.0);
+                    rows.push(Space::new().height(Length::Fixed(top_h)).into());
+                }
+                for chunk in visible_apps.chunks(grid_columns) {
+                    let mut buttons: Vec<Element<'static, Message>> = chunk
+                        .iter()
+                        .map(|(app, icon, state)| {
+                            app_grid_card(
+                                app,
+                                icon.clone(),
+                                *state,
+                                grid_icon_size,
+                                cell_height,
+                                space_xxs,
+                            )
+                        })
+                        .collect();
+                    let missing = grid_columns.saturating_sub(buttons.len());
+                    for _ in 0..missing {
+                        buttons.push(Space::new().width(Length::Fill).into());
+                    }
+                    rows.push(
+                        row(buttons)
+                            .spacing(space_s)
+                            .width(Length::Fill)
+                            .align_y(Alignment::Start)
+                            .into(),
+                    );
+                }
+                let bottom_h = content_h
+                    - (last_row as f32 * row_stride + cell_height)
+                    - space_s as f32;
+                if bottom_h > 0.0 {
+                    rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
+                }
+                column(rows).spacing(space_s)
+            });
 
-            let app_grid = container(column(rows).spacing(space_s))
+            let app_grid = container(app_grid)
                 .padding([0, space_m.saturating_add(SCROLLBAR_WIDTH as u16), 0, 0])
                 .width(Length::Fill);
             let scroller = scrollable(app_grid)
@@ -444,58 +438,73 @@ impl Applet {
                 width: item_width,
             };
 
-            let mut rows: Vec<Element<'_, Message>> =
-                Vec::with_capacity(last_row.saturating_sub(first_row) + 3);
-            if first_row > 0 {
-                let top_h = (first_row as f32 * row_stride - column_spacing as f32).max(0.0);
-                rows.push(Space::new().height(Length::Fixed(top_h)).into());
-            }
-            for row_idx in first_row..=last_row {
-                let start = row_idx * cols;
-                let end = (start + cols).min(apps.len());
-                let mut row_children: Vec<Element<'_, Message>> = Vec::with_capacity(cols);
-                for index in start..end {
-                    let app = &apps[index];
-                    let is_fav = fav_set.contains(app.id.as_str());
-                    let is_pinned = pinned_set.contains(app.id.as_str());
-                    let is_selected = self.selected_index == Some(index);
-                    let show_actions = self.hovered_app_index == Some(index);
-                    let icon = self.cached_icon(app, LIST_ICON_SIZE as f32);
-                    row_children.push(app_list_card(
-                        app,
-                        icon,
-                        card_layout,
-                        AppCardState {
-                            index,
-                            is_favourite: is_fav,
-                            is_pinned,
-                            is_selected,
-                            show_actions,
-                        },
-                    ));
+            let rows_key = visible_rows_key(
+                apps,
+                first_row,
+                last_row,
+                cols,
+                item_width,
+                space_xxs,
+                space_s,
+                self.selected_index,
+                self.hovered_app_index,
+                &fav_set,
+                &pinned_set,
+            );
+            let visible_apps: Vec<_> = (first_row * cols
+                ..((last_row + 1) * cols).min(apps.len()))
+                .map(|index| {
+                    let app = apps[index].clone();
+                    let state = AppCardState {
+                        index,
+                        is_favourite: fav_set.contains(app.id.as_str()),
+                        is_pinned: pinned_set.contains(app.id.as_str()),
+                        is_selected: self.selected_index == Some(index),
+                        show_actions: self.hovered_app_index == Some(index),
+                    };
+                    let icon = self.cached_icon(&app, LIST_ICON_SIZE as f32);
+                    (app, icon, state)
+                })
+                .collect();
+            let list_rows = lazy(rows_key, move |_| {
+                let mut rows: Vec<Element<'static, Message>> =
+                    Vec::with_capacity(last_row.saturating_sub(first_row) + 3);
+                if first_row > 0 {
+                    let top_h =
+                        (first_row as f32 * row_stride - column_spacing as f32).max(0.0);
+                    rows.push(Space::new().height(Length::Fixed(top_h)).into());
                 }
-                let missing = cols.saturating_sub(row_children.len());
-                for _ in 0..missing {
-                    row_children
-                        .push(Space::new().width(Length::Fixed(item_width as f32)).into());
+                for chunk in visible_apps.chunks(cols) {
+                    let mut row_children: Vec<Element<'static, Message>> = chunk
+                        .iter()
+                        .map(|(app, icon, state)| {
+                            app_list_card(app, icon.clone(), card_layout, *state)
+                        })
+                        .collect();
+                    let missing = cols.saturating_sub(row_children.len());
+                    for _ in 0..missing {
+                        row_children
+                            .push(Space::new().width(Length::Fixed(item_width as f32)).into());
+                    }
+                    rows.push(
+                        row(row_children)
+                            .spacing(column_spacing)
+                            .width(Length::Fill)
+                            .into(),
+                    );
                 }
-                rows.push(
-                    row(row_children)
-                        .spacing(column_spacing)
-                        .width(Length::Fill)
-                        .into(),
-                );
-            }
-            if last_row < total_rows.saturating_sub(1) {
-                let bottom_h = content_h
-                    - (last_row as f32 * row_stride + card_height)
-                    - column_spacing as f32;
-                if bottom_h > 0.0 {
-                    rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
+                if last_row < total_rows.saturating_sub(1) {
+                    let bottom_h = content_h
+                        - (last_row as f32 * row_stride + card_height)
+                        - column_spacing as f32;
+                    if bottom_h > 0.0 {
+                        rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
+                    }
                 }
-            }
+                column(rows).spacing(column_spacing)
+            });
 
-            let list_content = container(column(rows).spacing(column_spacing))
+            let list_content = container(list_rows)
                 .padding([0, space_m.saturating_add(SCROLLBAR_WIDTH as u16), 0, 0])
                 .width(Length::Fill);
 
@@ -585,10 +594,10 @@ impl Applet {
                         .into()
                     });
 
-            let current_icon = match self.config.panel_icon.as_str() {
-                "" => "cosmic-logo",
-                "kde" => "kde-official",
-                name => name,
+            let current_icon = if self.config.panel_icon.is_empty() {
+                "com.github.cosmic-kickoff-launcher"
+            } else {
+                self.config.panel_icon.as_str()
             };
             let selected_idx = ICON_OPTIONS
                 .iter()
@@ -941,6 +950,59 @@ struct GridMetrics {
     column_spacing: u16,
 }
 
+#[derive(Hash)]
+struct VisibleRowsKey {
+    first_row: usize,
+    last_row: usize,
+    columns: usize,
+    fixed_item_width: usize,
+    space_xxs: u16,
+    space_s: u16,
+    cards: Vec<(usize, usize, u8)>,
+}
+
+fn visible_rows_key(
+    apps: &[Arc<ApplicationEntry>],
+    first_row: usize,
+    last_row: usize,
+    columns: usize,
+    fixed_item_width: usize,
+    space_xxs: u16,
+    space_s: u16,
+    selected_index: Option<usize>,
+    hovered_index: Option<usize>,
+    favourite_ids: &HashSet<String>,
+    pinned_ids: &HashSet<String>,
+) -> VisibleRowsKey {
+    let start = first_row.saturating_mul(columns).min(apps.len());
+    let end = last_row
+        .saturating_add(1)
+        .saturating_mul(columns)
+        .min(apps.len());
+    let cards = apps[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, app)| {
+            let index = start + offset;
+            let mut state = 0;
+            state |= u8::from(favourite_ids.contains(app.id.as_str()));
+            state |= u8::from(pinned_ids.contains(app.id.as_str())) << 1;
+            state |= u8::from(selected_index == Some(index)) << 2;
+            state |= u8::from(hovered_index == Some(index)) << 3;
+            (Arc::as_ptr(app) as usize, index, state)
+        })
+        .collect();
+    VisibleRowsKey {
+        first_row,
+        last_row,
+        columns,
+        fixed_item_width,
+        space_xxs,
+        space_s,
+        cards,
+    }
+}
+
 impl GridMetrics {
     fn new(width: usize, min_width: usize, column_spacing: u16) -> Self {
         let width_m1 = width.saturating_sub(min_width);
@@ -1251,21 +1313,76 @@ struct AppCardState {
     show_actions: bool,
 }
 
-fn app_list_card<'a>(
-    app: &'a ApplicationEntry,
+fn app_grid_card(
+    app: &ApplicationEntry,
+    icon: cosmic::widget::icon::Icon,
+    state: AppCardState,
+    icon_size: f32,
+    card_height: f32,
+    space_xxs: u16,
+) -> Element<'static, Message> {
+    let name = truncate_name(&app.name, 32).into_owned();
+    let inner = column![
+        icon.width(Length::Fixed(icon_size))
+            .height(Length::Fixed(icon_size)),
+        cosmic::widget::text::caption(name)
+            .wrapping(cosmic::iced::widget::text::Wrapping::Word),
+    ]
+    .align_x(Alignment::Center)
+    .spacing(space_xxs);
+    let inner = container(inner)
+        .center_x(Length::Fill)
+        .align_y(Alignment::Start)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding([space_xxs, 0, 0, 0]);
+    let content: Element<'static, Message> = if state.show_actions {
+        stack![
+            inner,
+            container(app_action_row(
+                state.index,
+                state.is_favourite,
+                state.is_pinned,
+            ))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Start)
+            .padding(0),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    } else {
+        inner.into()
+    };
+    let button = button::custom(content)
+        .on_press(Message::LaunchApp(state.index))
+        .class(app_grid_card_class(state.is_selected))
+        .width(Length::Fill)
+        .height(Length::Fixed(card_height));
+
+    mouse_area(button)
+        .on_enter(Message::AppHovered(state.index))
+        .on_exit(Message::AppUnhovered)
+        .into()
+}
+
+fn app_list_card(
+    app: &ApplicationEntry,
     icon: cosmic::widget::icon::Icon,
     layout: ListCardLayout,
     state: AppCardState,
-) -> Element<'a, Message> {
+) -> Element<'static, Message> {
     let summary = app
         .description
         .as_deref()
         .map(|d| truncate_name(d, 60))
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_owned();
 
     let effective_text_width = layout.text_width.max(40.0);
 
-    let name_row: Element<'_, Message> = cosmic::widget::text::body(&app.name)
+    let name_row: Element<'static, Message> = cosmic::widget::text::body(app.name.clone())
         .height(Length::Fixed(20.0))
         .width(Length::Fixed(effective_text_width))
         .wrapping(cosmic::iced::widget::text::Wrapping::Word)
@@ -1289,7 +1406,7 @@ fn app_list_card<'a>(
     .spacing(layout.space_s)
     .width(Length::Fill);
 
-    let card_content: Element<'a, Message> = if state.show_actions {
+    let card_content: Element<'static, Message> = if state.show_actions {
         stack![
             card_body,
             container(app_action_buttons(
@@ -1326,8 +1443,7 @@ fn app_list_card<'a>(
 pub(crate) fn app_icon(app: &ApplicationEntry, size: f32) -> cosmic::widget::icon::Icon {
     let size_u16 = size as u16;
     if let Some(ref name) = app.icon {
-        let name: Arc<str> = Arc::from(name.as_str());
-        icon::from_name(name)
+        icon::from_name(name.clone())
             .symbolic(false)
             .prefer_svg(true)
             .size(size_u16)

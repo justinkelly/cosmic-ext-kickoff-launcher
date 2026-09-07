@@ -199,7 +199,7 @@ impl Default for AppletConfig {
             size_preset: SizePreset::Portrait,
             custom_width: 0.0,
             custom_height: 0.0,
-            panel_icon: "cosmic-logo".into(),
+            panel_icon: "com.github.cosmic-kickoff-launcher".into(),
             panel_icon_symbolic: false,
             max_recents: 10,
             show_favourites: true,

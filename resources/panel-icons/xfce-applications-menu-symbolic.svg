@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Monochrome adaptation of Xfce's Applications Menu mark. -->
+  <path d="M18 8 64 54 110 8l10 10-46 46 46 46-10 10-46-46-46 46-10-10 46-46L8 18Z"/>
+  <g transform="rotate(-8 68 66)">
+    <ellipse cx="67" cy="70" rx="29" ry="17"/>
+    <circle cx="94" cy="61" r="13"/>
+    <path d="m88 51 2-14 10 13m-34 5-4-16 13 13M40 70c-13-9-20-2-24 8 7-5 12-4 18 1Z"/>
+  </g>
+</svg>

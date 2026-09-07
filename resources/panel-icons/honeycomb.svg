@@ -1,0 +1,19 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="25" y1="15" x2="102" y2="117" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9B5DE5"/>
+      <stop offset="1" stop-color="#6137B5"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="64" r="58" fill="url(#bg)"/>
+  <g fill="#FFF8E8">
+    <path d="M64 53 73 58v12l-9 5-9-5V58Z"/>
+    <path d="M64 28 73 33v12l-9 5-9-5V33Z"/>
+    <path d="m86 40 9 5v12l-9 5-9-5V45Z"/>
+    <path d="m86 66 9 5v12l-9 5-9-5V71Z"/>
+    <path d="m64 79 9 5v12l-9 5-9-5V84Z"/>
+    <path d="m42 66 9 5v12l-9 5-9-5V71Z"/>
+    <path d="m42 40 9 5v12l-9 5-9-5V45Z"/>
+  </g>
+</svg>
