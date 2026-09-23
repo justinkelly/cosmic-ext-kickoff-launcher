@@ -30,6 +30,7 @@ pub(crate) struct Flags {
 }
 const LEGACY_APP_ID: &str = "com.github.cosmic-kde-launcher";
 pub(crate) const COSMIC_FILES_APP_ID: &str = "com.system76.CosmicFiles.desktop";
+pub(crate) const COSMIC_STORE_APP_ID: &str = "com.system76.CosmicStore.desktop";
 pub(crate) const COSMIC_SETTINGS_APP_ID: &str = "com.system76.CosmicSettings.desktop";
 pub(crate) const GRID_ICON_SIZE: u16 = 64;
 pub(crate) const LIST_ICON_SIZE: u16 = 48;
@@ -470,6 +471,7 @@ fn message_update(applet: &mut Applet, message: Message) -> Task<Message> {
             }
             let program = match id.as_str() {
                 COSMIC_FILES_APP_ID => "cosmic-files",
+                COSMIC_STORE_APP_ID => "cosmic-store",
                 COSMIC_SETTINGS_APP_ID => "cosmic-settings",
                 _ => return Task::none(),
             };
@@ -983,19 +985,13 @@ impl Applet {
         let selected = current.saturating_add_signed(offset).min(len - 1);
         self.selected_index = Some(selected);
 
-        let columns = view::navigation_columns(self).max(1);
-        let rows = len.div_ceil(columns);
-        let row = selected / columns;
-        let relative_y = if rows <= 1 {
-            0.0
-        } else {
-            row as f32 / (rows - 1) as f32
-        };
-        cosmic::iced::widget::scrollable::snap_to(
+        let y = view::scroll_offset_for_index(self, selected);
+        self.app_scroll_y = y;
+        cosmic::iced::widget::scrollable::scroll_to(
             (*APP_SCROLL_ID).clone(),
-            cosmic::iced::widget::scrollable::RelativeOffset {
+            cosmic::iced::widget::scrollable::AbsoluteOffset {
                 x: Some(0.0),
-                y: Some(relative_y),
+                y: Some(y),
             },
         )
     }

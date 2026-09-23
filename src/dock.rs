@@ -2,7 +2,9 @@
 
 //! Integration with the COSMIC dock.
 
-use crate::app::{Applet, COSMIC_FILES_APP_ID, COSMIC_SETTINGS_APP_ID};
+use crate::app::{
+    Applet, COSMIC_FILES_APP_ID, COSMIC_SETTINGS_APP_ID, COSMIC_STORE_APP_ID,
+};
 use cosmic::cosmic_config::{self, ConfigGet, ConfigSet};
 
 impl Applet {
@@ -41,9 +43,13 @@ impl Applet {
     }
 }
 
-/// Read pinned apps, adding Files and Settings as local display defaults.
+/// Read pinned apps, adding Files, Store, and Settings as local display defaults.
 pub(crate) fn load_pinned_apps_with_defaults() -> Vec<String> {
-    const DEFAULTS: [&str; 2] = [COSMIC_FILES_APP_ID, COSMIC_SETTINGS_APP_ID];
+    const DEFAULTS: [&str; 3] = [
+        COSMIC_FILES_APP_ID,
+        COSMIC_STORE_APP_ID,
+        COSMIC_SETTINGS_APP_ID,
+    ];
     let Ok(config) = cosmic_config::Config::new("com.system76.CosmicDock", 1) else {
         return DEFAULTS.iter().map(|id| (*id).to_string()).collect();
     };

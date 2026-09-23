@@ -9,6 +9,7 @@ mod launch;
 mod panel_icons;
 mod power;
 mod view;
+mod vscroll;
 
 use app::{Applet, Flags};
 use config::{AppletConfig, MIN_CUSTOM_HEIGHT, MIN_CUSTOM_WIDTH};

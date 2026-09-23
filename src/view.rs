@@ -855,27 +855,62 @@ pub(crate) fn index_in_visible_rows(applet: &Applet, index: usize) -> bool {
     (layout.first_row..=layout.last_row).contains(&row)
 }
 
+pub(crate) fn scroll_offset_for_index(applet: &Applet, index: usize) -> f32 {
+    let spacing = theme::active().cosmic().spacing;
+    let menu_width = if applet.is_window_mode {
+        applet.window_width
+    } else {
+        applet.config.max_width()
+    };
+    let menu_height = if applet.is_window_mode {
+        applet.window_height
+    } else {
+        applet.config.max_height()
+    };
+    let sidebar_visible = !applet.sidebar_collapsed && menu_width >= 600.0;
+    let content_width = app_content_width(menu_width, sidebar_visible, spacing);
+    let Some(layout) = page_layout(
+        applet,
+        menu_height,
+        content_width,
+        uses_grid_layout(applet),
+        spacing.space_xxs,
+        spacing.space_s,
+    ) else {
+        return 0.0;
+    };
+    let row_count = applet
+        .available_applications
+        .len()
+        .div_ceil(layout.columns.max(1));
+    if row_count <= 1 {
+        return 0.0;
+    }
+    let content_h = content_height(row_count, layout.card_height, layout.row_gap);
+    let viewport = if applet.app_viewport_height > 1.0 {
+        applet.app_viewport_height
+    } else {
+        menu_height
+    };
+    let max_scroll = (content_h - viewport).max(0.0);
+    let row = index / layout.columns.max(1);
+    let relative = row as f32 / (row_count - 1) as f32;
+    relative * max_scroll
+}
+
 fn visible_row_range(
     scroll: f32,
     viewport: f32,
     row_stride: f32,
     row_count: usize,
 ) -> (usize, usize) {
-    if row_count == 0 || !row_stride.is_finite() || row_stride <= f32::EPSILON {
-        return (0, 0);
-    }
-    let scroll = scroll.max(0.0);
-    let viewport = if viewport.is_finite() && viewport > 0.0 {
-        viewport
-    } else {
-        row_stride
-    };
-    let last_row = row_count - 1;
-    let first = ((scroll / row_stride).floor() as usize)
-        .saturating_sub(ROW_OVERSCAN)
-        .min(last_row);
-    let last = (((scroll + viewport) / row_stride).floor() as usize + ROW_OVERSCAN).min(last_row);
-    (first.min(last), last)
+    crate::vscroll::row_window(
+        scroll,
+        viewport,
+        row_stride,
+        row_count,
+        ROW_OVERSCAN,
+    )
 }
 
 fn content_height(row_count: usize, card_height: f32, row_gap: f32) -> f32 {
@@ -986,13 +1021,13 @@ fn virtualized_apps<'a>(
     let list = container(list)
         .padding([0, space_m.saturating_add(SCROLLBAR_WIDTH as u16), 0, 0])
         .width(Length::Fill);
-    scrollable(list)
-        .id((*APP_SCROLL_ID).clone())
-        .height(Length::Fill)
-        .on_scroll(|viewport| {
-            Message::AppsScrolled(viewport.absolute_offset().y, viewport.bounds().height)
-        })
-        .into()
+    crate::vscroll::list(
+        list,
+        (*APP_SCROLL_ID).clone(),
+        layout.row_stride,
+        row_count,
+        ROW_OVERSCAN,
+    )
 }
 
 fn cached_visible_rows(
@@ -1129,6 +1164,7 @@ fn list_grid_metrics(space_xxs: u16, space_s: u16, width: usize) -> GridMetrics 
 fn bottom_bar_icon_fallback_name(app_id: &str) -> Cow<'static, str> {
     match app_id {
         crate::app::COSMIC_FILES_APP_ID => Cow::Borrowed("com.system76.CosmicFiles"),
+        crate::app::COSMIC_STORE_APP_ID => Cow::Borrowed("com.system76.CosmicStore"),
         crate::app::COSMIC_SETTINGS_APP_ID => Cow::Borrowed("com.system76.CosmicSettings"),
         _ => Cow::Owned(
             app_id
