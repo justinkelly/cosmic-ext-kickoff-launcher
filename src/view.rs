@@ -11,18 +11,18 @@ use crate::power::PowerAction;
 use crate::{apps, fl, panel_icons};
 use cosmic::cosmic_theme::Spacing;
 use cosmic::iced::{
-    widget::{column, container, lazy, row, scrollable, stack, Space},
+    widget::{column, container, lazy, row, stack, Space},
     Alignment, Color, Length, Limits,
 };
 use cosmic::theme;
 use cosmic::widget::{
-    button, dropdown, icon, mouse_area, nav_bar, nav_bar_toggle, search_input, settings,
-    text_input, tooltip,
+    button, dropdown, icon, mouse_area, nav_bar, nav_bar_toggle, scrollable, search_input,
+    settings, text_input, tooltip,
 };
 use cosmic::Element;
 use apps::ApplicationEntry;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 /// Panel icon names and display labels.
@@ -79,9 +79,7 @@ static ICON_OPTION_HANDLES: LazyLock<Vec<icon::Handle>> = LazyLock::new(|| {
 });
 
 pub(crate) fn warm_icon_option_handles() {
-    std::thread::spawn(|| {
-        LazyLock::force(&ICON_OPTION_HANDLES);
-    });
+    LazyLock::force(&ICON_OPTION_HANDLES);
 }
 
 static SIZE_PRESET_LABELS: LazyLock<Vec<String>> = LazyLock::new(|| {
@@ -92,6 +90,42 @@ const BOTTOM_BAR_CONTENT_HEIGHT: f32 = 21.0;
 const BOTTOM_BAR_MIN_HEIGHT: f32 = 44.0;
 const GRID_MIN_BUTTON_WIDTH: f32 = 80.0;
 const SCROLLBAR_WIDTH: f32 = 8.0;
+const ROW_OVERSCAN: usize = 1;
+
+pub(crate) type AppIconHandles = HashMap<(Option<Arc<str>>, u16), cosmic::widget::icon::Handle>;
+
+pub(crate) struct VisibleRowCache {
+    generation: u64,
+    first_row: usize,
+    last_row: usize,
+    columns: usize,
+    rows: Arc<Vec<Arc<[Arc<ApplicationEntry>]>>>,
+}
+
+pub(crate) fn resolve_icon_handles(apps: &[Arc<ApplicationEntry>]) -> AppIconHandles {
+    let mut handles = HashMap::new();
+    for &size in [crate::app::GRID_ICON_SIZE, crate::app::LIST_ICON_SIZE, crate::app::BAR_ICON_SIZE]
+        .iter()
+    {
+        handles.insert((None, size), app_icon_handle(None, size));
+    }
+    for app in apps {
+        let Some(name) = app.icon.clone() else {
+            continue;
+        };
+        for &size in
+            [crate::app::GRID_ICON_SIZE, crate::app::LIST_ICON_SIZE, crate::app::BAR_ICON_SIZE]
+                .iter()
+        {
+            let key = (Some(Arc::clone(&name)), size);
+            if handles.contains_key(&key) {
+                continue;
+            }
+            handles.insert(key, app_icon_handle(Some(name.as_ref()), size));
+        }
+    }
+    handles
+}
 
 fn uses_grid_layout(applet: &Applet) -> bool {
     applet.config.layout_mode == LayoutMode::Grid
@@ -250,16 +284,12 @@ impl Applet {
             .into()
         });
 
-        let fav_set = self.cached_fav_ids.borrow();
-        let pinned_set = self.cached_pinned_ids.borrow();
-
         let use_grid = uses_grid_layout(self);
         let app_content_width = app_content_width(
             menu_width,
             sidebar_visible,
             cosmic_theme.cosmic().spacing,
         );
-        let grid_icon_size = f32::from(GRID_ICON_SIZE);
 
         let app_area: Element<'_, Message> = if self.available_applications.is_empty() {
             container(cosmic::widget::text::body(fl!("no-applications")))
@@ -268,257 +298,18 @@ impl Applet {
                 .height(Length::Fill)
                 .width(Length::Fill)
                 .into()
-        } else if use_grid {
-            let min_btn = GRID_MIN_BUTTON_WIDTH + space_s as f32;
-            let grid_columns = self
-                .config
-                .grid_columns
-                .min(((app_content_width / min_btn) as usize).clamp(1, 8));
-
-            let cell_height = grid_icon_size + 44.0 + space_xxs as f32 * 2.0;
-            let row_stride = cell_height + space_s as f32;
-            let rows_total = self.available_applications.len().div_ceil(grid_columns);
-            let content_h = rows_total as f32 * cell_height
-                + (rows_total.saturating_sub(1)) as f32 * space_s as f32;
-
-            // Keep one row mounted above and below the viewport.
-            let viewport_h = if self.app_viewport_height > 0.0 {
-                self.app_viewport_height
-            } else {
-                menu_height
-            };
-            let scroll = self
-                .app_scroll_y
-                .clamp(0.0, (content_h - viewport_h).max(0.0));
-            let mut first_row = if scroll <= cell_height {
-                0
-            } else {
-                ((scroll - cell_height) / row_stride).floor() as usize + 1
-            };
-            first_row = first_row.saturating_sub(1);
-            let mut last_row = ((scroll + viewport_h) / row_stride).ceil() as usize;
-            last_row = last_row
-                .saturating_sub(1)
-                .min(rows_total.saturating_sub(1));
-            last_row = (last_row + 1).min(rows_total.saturating_sub(1));
-            let rows_key = visible_rows_key(
-                &self.available_applications,
-                first_row,
-                last_row,
-                grid_columns,
-                0,
-                space_xxs,
-                space_s,
-                self.selected_index,
-                self.hovered_app_index,
-                &fav_set,
-                &pinned_set,
-            );
-            let visible_apps: Vec<_> = (first_row * grid_columns
-                ..((last_row + 1) * grid_columns).min(self.available_applications.len()))
-                .map(|index| {
-                    let app = self.available_applications[index].clone();
-                    let state = AppCardState {
-                        index,
-                        is_favourite: fav_set.contains(app.id.as_str()),
-                        is_pinned: pinned_set.contains(app.id.as_str()),
-                        is_selected: self.selected_index == Some(index),
-                        show_actions: self.hovered_app_index == Some(index),
-                    };
-                    let icon = self.cached_icon(&app, grid_icon_size);
-                    (app, icon, state)
-                })
-                .collect();
-            let app_grid = lazy(rows_key, move |_| {
-                let mut rows: Vec<Element<'static, Message>> =
-                    Vec::with_capacity(last_row - first_row + 3);
-                if first_row > 0 {
-                    let top_h =
-                        (first_row as f32 * row_stride - space_s as f32).max(0.0);
-                    rows.push(Space::new().height(Length::Fixed(top_h)).into());
-                }
-                for chunk in visible_apps.chunks(grid_columns) {
-                    let mut buttons: Vec<Element<'static, Message>> = chunk
-                        .iter()
-                        .map(|(app, icon, state)| {
-                            app_grid_card(
-                                app,
-                                icon.clone(),
-                                *state,
-                                grid_icon_size,
-                                cell_height,
-                                space_xxs,
-                            )
-                        })
-                        .collect();
-                    let missing = grid_columns.saturating_sub(buttons.len());
-                    for _ in 0..missing {
-                        buttons.push(Space::new().width(Length::Fill).into());
-                    }
-                    rows.push(
-                        row(buttons)
-                            .spacing(space_s)
-                            .width(Length::Fill)
-                            .align_y(Alignment::Start)
-                            .into(),
-                    );
-                }
-                let bottom_h = content_h
-                    - (last_row as f32 * row_stride + cell_height)
-                    - space_s as f32;
-                if bottom_h > 0.0 {
-                    rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
-                }
-                column(rows).spacing(space_s)
-            });
-
-            let app_grid = container(app_grid)
-                .padding([0, space_m.saturating_add(SCROLLBAR_WIDTH as u16), 0, 0])
-                .width(Length::Fill);
-            let scroller = scrollable(app_grid)
-                .id((*APP_SCROLL_ID).clone())
-                .height(Length::Fill)
-                .on_scroll(|vp| {
-                    Message::AppsScrolled(vp.absolute_offset().y, vp.bounds().height)
-                });
-            container(scroller)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
         } else {
-            let list_width = app_content_width as usize;
-
-            let GridMetrics {
-                cols,
-                item_width,
-                column_spacing,
-            } = list_grid_metrics(space_xxs, space_s, list_width);
-
-            let apps = &self.available_applications;
-            let total_rows = if apps.is_empty() || cols == 0 {
-                0
-            } else {
-                (apps.len() + cols - 1) / cols
-            };
-            let card_height = LIST_ICON_SIZE as f32 + (space_xxs as f32) * 2.0;
-            let row_stride = card_height + column_spacing as f32;
-            let content_h = if total_rows == 0 {
-                0.0
-            } else {
-                total_rows as f32 * row_stride - column_spacing as f32
-            };
-
-            let viewport_h = if self.app_viewport_height > 0.0 {
-                self.app_viewport_height
-            } else {
-                menu_height
-            };
-            let scroll = self
-                .app_scroll_y
-                .clamp(0.0, (content_h - viewport_h).max(0.0));
-            let first_row = if scroll <= row_stride {
-                0usize
-            } else {
-                ((scroll / row_stride) as usize).saturating_sub(1)
-            };
-            let last_row = ((scroll + viewport_h) / row_stride).ceil() as usize;
-            let last_row = last_row
-                .min(total_rows.saturating_sub(1))
-                .saturating_add(1)
-                .min(total_rows.saturating_sub(1));
-            let text_width = item_width.saturating_sub(
-                LIST_ICON_SIZE as usize
-                    + space_s as usize * 3
-                    + ACTION_ROW_HEIGHT as usize * 2,
-            ) as f32;
-            let card_layout = ListCardLayout {
+            virtualized_apps(
+                self,
+                menu_height,
+                app_content_width,
+                use_grid,
                 space_xxs,
                 space_s,
-                text_width,
-                width: item_width,
-            };
-
-            let rows_key = visible_rows_key(
-                apps,
-                first_row,
-                last_row,
-                cols,
-                item_width,
-                space_xxs,
-                space_s,
-                self.selected_index,
-                self.hovered_app_index,
-                &fav_set,
-                &pinned_set,
-            );
-            let visible_apps: Vec<_> = (first_row * cols
-                ..((last_row + 1) * cols).min(apps.len()))
-                .map(|index| {
-                    let app = apps[index].clone();
-                    let state = AppCardState {
-                        index,
-                        is_favourite: fav_set.contains(app.id.as_str()),
-                        is_pinned: pinned_set.contains(app.id.as_str()),
-                        is_selected: self.selected_index == Some(index),
-                        show_actions: self.hovered_app_index == Some(index),
-                    };
-                    let icon = self.cached_icon(&app, LIST_ICON_SIZE as f32);
-                    (app, icon, state)
-                })
-                .collect();
-            let list_rows = lazy(rows_key, move |_| {
-                let mut rows: Vec<Element<'static, Message>> =
-                    Vec::with_capacity(last_row.saturating_sub(first_row) + 3);
-                if first_row > 0 {
-                    let top_h =
-                        (first_row as f32 * row_stride - column_spacing as f32).max(0.0);
-                    rows.push(Space::new().height(Length::Fixed(top_h)).into());
-                }
-                for chunk in visible_apps.chunks(cols) {
-                    let mut row_children: Vec<Element<'static, Message>> = chunk
-                        .iter()
-                        .map(|(app, icon, state)| {
-                            app_list_card(app, icon.clone(), card_layout, *state)
-                        })
-                        .collect();
-                    let missing = cols.saturating_sub(row_children.len());
-                    for _ in 0..missing {
-                        row_children
-                            .push(Space::new().width(Length::Fixed(item_width as f32)).into());
-                    }
-                    rows.push(
-                        row(row_children)
-                            .spacing(column_spacing)
-                            .width(Length::Fill)
-                            .into(),
-                    );
-                }
-                if last_row < total_rows.saturating_sub(1) {
-                    let bottom_h = content_h
-                        - (last_row as f32 * row_stride + card_height)
-                        - column_spacing as f32;
-                    if bottom_h > 0.0 {
-                        rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
-                    }
-                }
-                column(rows).spacing(column_spacing)
-            });
-
-            let list_content = container(list_rows)
-                .padding([0, space_m.saturating_add(SCROLLBAR_WIDTH as u16), 0, 0])
-                .width(Length::Fill);
-
-            let scroller = scrollable(list_content)
-                .id((*APP_SCROLL_ID).clone())
-                .height(Length::Fill)
-                .on_scroll(|vp| {
-                    Message::AppsScrolled(vp.absolute_offset().y, vp.bounds().height)
-                });
-            container(scroller)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+                space_m,
+            )
         };
+
 
         let app_area: Element<'_, Message> = mouse_area(
             container(app_area)
@@ -742,7 +533,7 @@ impl Applet {
 
             if show_bottom_bar_pinned {
                 for pinned_id in &self.pinned_apps {
-                    let app = self.all_applications.iter().find(|a| a.id == *pinned_id);
+                    let app = self.apps_by_id.get(pinned_id);
                     let label: Cow<'static, str> = if let Some(app) = app {
                         Cow::Owned(truncate_name(&app.name, 24).into_owned())
                     } else {
@@ -753,9 +544,14 @@ impl Applet {
                                 .to_string(),
                         )
                     };
+                    let icon = app
+                        .map(|app| icon_widget(&self.icon_handles, app, crate::app::BAR_ICON_SIZE))
+                        .unwrap_or_else(|| {
+                            bottom_bar_fallback_icon(pinned_id, crate::app::BAR_ICON_SIZE)
+                        });
                     let hovered = self.hovered_pinned_id.as_deref() == Some(pinned_id.as_str());
                     bottom_row = bottom_row.push(bottom_bar_pinned_item(
-                        &self.all_applications,
+                        icon,
                         pinned_id,
                         label,
                         hovered,
@@ -946,61 +742,372 @@ fn size_preset_label(preset: SizePreset) -> String {
 
 struct GridMetrics {
     cols: usize,
-    item_width: usize,
     column_spacing: u16,
 }
 
-#[derive(Hash)]
-struct VisibleRowsKey {
-    first_row: usize,
-    last_row: usize,
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct RowKey {
+    generation: u64,
+    row: usize,
     columns: usize,
-    fixed_item_width: usize,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    flags: u64,
+    grid: bool,
     space_xxs: u16,
     space_s: u16,
-    cards: Vec<(usize, usize, u8)>,
 }
 
-fn visible_rows_key(
-    apps: &[Arc<ApplicationEntry>],
+struct PageLayout {
+    columns: usize,
+    card_height: f32,
+    row_gap: f32,
+    gap: u16,
+    row_stride: f32,
     first_row: usize,
     last_row: usize,
-    columns: usize,
-    fixed_item_width: usize,
+    icon_size: u16,
+    grid: bool,
+}
+
+fn page_layout(
+    applet: &Applet,
+    menu_height: f32,
+    content_width: f32,
+    grid: bool,
     space_xxs: u16,
     space_s: u16,
-    selected_index: Option<usize>,
-    hovered_index: Option<usize>,
-    favourite_ids: &HashSet<String>,
-    pinned_ids: &HashSet<String>,
-) -> VisibleRowsKey {
-    let start = first_row.saturating_mul(columns).min(apps.len());
-    let end = last_row
-        .saturating_add(1)
-        .saturating_mul(columns)
-        .min(apps.len());
-    let cards = apps[start..end]
+) -> Option<PageLayout> {
+    let count = applet.available_applications.len();
+    if count == 0 || content_width <= 1.0 {
+        return None;
+    }
+    let (columns, gap, card_height, icon_size) = if grid {
+        let min_btn = GRID_MIN_BUTTON_WIDTH + space_s as f32;
+        let columns = applet
+            .config
+            .grid_columns
+            .min(((content_width / min_btn) as usize).clamp(1, 8))
+            .max(1);
+        let card_height = f32::from(GRID_ICON_SIZE) + 44.0 + space_xxs as f32 * 2.0;
+        (columns, space_s, card_height, GRID_ICON_SIZE)
+    } else {
+        let metrics = list_grid_metrics(space_xxs, space_s, content_width as usize);
+        let card_height = f32::from(LIST_ICON_SIZE) + space_xxs as f32 * 2.0;
+        (
+            metrics.cols.max(1),
+            metrics.column_spacing,
+            card_height,
+            LIST_ICON_SIZE,
+        )
+    };
+    let row_gap = f32::from(gap);
+    let row_stride = card_height + row_gap;
+    let row_count = count.div_ceil(columns);
+    let viewport = if applet.app_viewport_height > 1.0 {
+        applet.app_viewport_height
+    } else {
+        menu_height
+    };
+    let (first_row, last_row) =
+        visible_row_range(applet.app_scroll_y, viewport, row_stride, row_count);
+    Some(PageLayout {
+        columns,
+        card_height,
+        row_gap,
+        gap,
+        row_stride,
+        first_row,
+        last_row,
+        icon_size,
+        grid,
+    })
+}
+
+pub(crate) fn index_in_visible_rows(applet: &Applet, index: usize) -> bool {
+    if index >= applet.available_applications.len() {
+        return false;
+    }
+    let spacing = theme::active().cosmic().spacing;
+    let menu_width = if applet.is_window_mode {
+        applet.window_width
+    } else {
+        applet.config.max_width()
+    };
+    let menu_height = if applet.is_window_mode {
+        applet.window_height
+    } else {
+        applet.config.max_height()
+    };
+    let sidebar_visible = !applet.sidebar_collapsed && menu_width >= 600.0;
+    let content_width = app_content_width(menu_width, sidebar_visible, spacing);
+    let Some(layout) = page_layout(
+        applet,
+        menu_height,
+        content_width,
+        uses_grid_layout(applet),
+        spacing.space_xxs,
+        spacing.space_s,
+    ) else {
+        return false;
+    };
+    let row = index / layout.columns;
+    (layout.first_row..=layout.last_row).contains(&row)
+}
+
+fn visible_row_range(
+    scroll: f32,
+    viewport: f32,
+    row_stride: f32,
+    row_count: usize,
+) -> (usize, usize) {
+    if row_count == 0 || !row_stride.is_finite() || row_stride <= f32::EPSILON {
+        return (0, 0);
+    }
+    let scroll = scroll.max(0.0);
+    let viewport = if viewport.is_finite() && viewport > 0.0 {
+        viewport
+    } else {
+        row_stride
+    };
+    let last_row = row_count - 1;
+    let first = ((scroll / row_stride).floor() as usize)
+        .saturating_sub(ROW_OVERSCAN)
+        .min(last_row);
+    let last = (((scroll + viewport) / row_stride).floor() as usize + ROW_OVERSCAN).min(last_row);
+    (first.min(last), last)
+}
+
+fn content_height(row_count: usize, card_height: f32, row_gap: f32) -> f32 {
+    if row_count == 0 {
+        0.0
+    } else {
+        row_count as f32 * card_height + row_count.saturating_sub(1) as f32 * row_gap
+    }
+}
+
+fn virtualized_apps<'a>(
+    applet: &'a Applet,
+    menu_height: f32,
+    content_width: f32,
+    grid: bool,
+    space_xxs: u16,
+    space_s: u16,
+    space_m: u16,
+) -> Element<'a, Message> {
+    let Some(layout) = page_layout(
+        applet,
+        menu_height,
+        content_width,
+        grid,
+        space_xxs,
+        space_s,
+    ) else {
+        return container(cosmic::widget::text::body(fl!("no-applications")))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    };
+
+    let apps = &applet.available_applications;
+    let row_count = apps.len().div_ceil(layout.columns);
+    let content_h = content_height(row_count, layout.card_height, layout.row_gap);
+    let mut rows: Vec<Element<'static, Message>> =
+        Vec::with_capacity(layout.last_row - layout.first_row + 3);
+    if layout.first_row > 0 {
+        let top_h = (layout.first_row as f32 * layout.row_stride - layout.row_gap).max(0.0);
+        rows.push(Space::new().height(Length::Fixed(top_h)).into());
+    }
+
+    let icons = Arc::clone(&applet.icon_handles);
+    let row_apps = cached_visible_rows(applet, &layout);
+    for (offset, row_apps) in row_apps.iter().cloned().enumerate() {
+        let row_index = layout.first_row + offset;
+        let start = row_index * layout.columns;
+        let end = start + row_apps.len();
+        let selected = applet
+            .selected_index
+            .filter(|index| (start..end).contains(index));
+        let hovered = applet
+            .hovered_app_index
+            .filter(|index| (start..end).contains(index));
+        let flags = hovered.map_or(0, |index| {
+            let app = &apps[index];
+            u64::from(applet.fav_ids.contains(app.id.as_str()))
+                | (u64::from(applet.pinned_ids.contains(app.id.as_str())) << 1)
+        });
+        let key = RowKey {
+            generation: applet.available_generation,
+            row: row_index,
+            columns: layout.columns,
+            selected,
+            hovered,
+            flags,
+            grid: layout.grid,
+            space_xxs,
+            space_s,
+        };
+        let icons = Arc::clone(&icons);
+        let card_height = layout.card_height;
+        let icon_size = layout.icon_size;
+        let gap = layout.gap;
+        let is_grid = layout.grid;
+        rows.push(
+            lazy(key, move |_| {
+                build_app_row(
+                    &row_apps,
+                    start,
+                    layout.columns,
+                    &icons,
+                    icon_size,
+                    card_height,
+                    space_xxs,
+                    space_s,
+                    gap,
+                    is_grid,
+                    selected,
+                    hovered,
+                    flags,
+                )
+            })
+            .into(),
+        );
+    }
+    if layout.last_row + 1 < row_count {
+        let bottom_h = content_h
+            - (layout.last_row as f32 * layout.row_stride + layout.card_height)
+            - layout.row_gap;
+        if bottom_h > 0.0 {
+            rows.push(Space::new().height(Length::Fixed(bottom_h)).into());
+        }
+    }
+
+    let list = column(rows).spacing(layout.gap).width(Length::Fill);
+    let list = container(list)
+        .padding([0, space_m.saturating_add(SCROLLBAR_WIDTH as u16), 0, 0])
+        .width(Length::Fill);
+    scrollable(list)
+        .id((*APP_SCROLL_ID).clone())
+        .height(Length::Fill)
+        .on_scroll(|viewport| {
+            Message::AppsScrolled(viewport.absolute_offset().y, viewport.bounds().height)
+        })
+        .into()
+}
+
+fn cached_visible_rows(
+    applet: &Applet,
+    layout: &PageLayout,
+) -> Arc<Vec<Arc<[Arc<ApplicationEntry>]>>> {
+    if let Some(cached) = applet.visible_row_cache.as_ref()
+        && cached.generation == applet.available_generation
+        && cached.first_row == layout.first_row
+        && cached.last_row == layout.last_row
+        && cached.columns == layout.columns
+    {
+        return Arc::clone(&cached.rows);
+    }
+    row_slices(&applet.available_applications, layout)
+}
+
+fn row_slices(
+    apps: &[Arc<ApplicationEntry>],
+    layout: &PageLayout,
+) -> Arc<Vec<Arc<[Arc<ApplicationEntry>]>>> {
+    Arc::new(
+        (layout.first_row..=layout.last_row)
+            .map(|row_index| {
+                let start = row_index * layout.columns;
+                let end = (start + layout.columns).min(apps.len());
+                Arc::<[Arc<ApplicationEntry>]>::from(&apps[start..end])
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+impl Applet {
+    pub(crate) fn sync_visible_rows(&mut self) {
+        let spacing = theme::active().cosmic().spacing;
+        let (menu_width, menu_height) = if self.is_window_mode {
+            (self.window_width, self.window_height)
+        } else {
+            (self.config.max_width(), self.config.max_height())
+        };
+        let sidebar_visible = !self.sidebar_collapsed && menu_width >= 600.0;
+        let content_width = app_content_width(menu_width, sidebar_visible, spacing);
+        let Some(layout) = page_layout(
+            self,
+            menu_height,
+            content_width,
+            uses_grid_layout(self),
+            spacing.space_xxs,
+            spacing.space_s,
+        ) else {
+            self.visible_row_cache = None;
+            return;
+        };
+        if self.visible_row_cache.as_ref().is_some_and(|cached| {
+            cached.generation == self.available_generation
+                && cached.first_row == layout.first_row
+                && cached.last_row == layout.last_row
+                && cached.columns == layout.columns
+        }) {
+            return;
+        }
+        self.visible_row_cache = Some(VisibleRowCache {
+            generation: self.available_generation,
+            first_row: layout.first_row,
+            last_row: layout.last_row,
+            columns: layout.columns,
+            rows: row_slices(&self.available_applications, &layout),
+        });
+    }
+}
+
+fn build_app_row(
+    apps: &[Arc<ApplicationEntry>],
+    start: usize,
+    columns: usize,
+    icons: &AppIconHandles,
+    icon_size: u16,
+    card_height: f32,
+    space_xxs: u16,
+    space_s: u16,
+    gap: u16,
+    grid: bool,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    flags: u64,
+) -> Element<'static, Message> {
+    let mut buttons: Vec<Element<'static, Message>> = apps
         .iter()
         .enumerate()
         .map(|(offset, app)| {
             let index = start + offset;
-            let mut state = 0;
-            state |= u8::from(favourite_ids.contains(app.id.as_str()));
-            state |= u8::from(pinned_ids.contains(app.id.as_str())) << 1;
-            state |= u8::from(selected_index == Some(index)) << 2;
-            state |= u8::from(hovered_index == Some(index)) << 3;
-            (Arc::as_ptr(app) as usize, index, state)
+            let show_actions = hovered == Some(index);
+            let state = AppCardState {
+                index,
+                is_favourite: show_actions && flags & 1 != 0,
+                is_pinned: show_actions && flags & 2 != 0,
+                is_selected: selected == Some(index),
+                show_actions,
+            };
+            let icon = icon_widget(icons, app, icon_size);
+            if grid {
+                app_grid_card(app, icon, state, f32::from(icon_size), card_height, space_xxs)
+            } else {
+                app_list_card(app, icon, ListCardLayout { space_xxs, space_s }, state)
+            }
         })
         .collect();
-    VisibleRowsKey {
-        first_row,
-        last_row,
-        columns,
-        fixed_item_width,
-        space_xxs,
-        space_s,
-        cards,
+    for _ in 0..columns.saturating_sub(buttons.len()) {
+        buttons.push(Space::new().width(Length::Fill).into());
     }
+    row(buttons)
+        .spacing(gap)
+        .width(Length::Fill)
+        .align_y(Alignment::Start)
+        .into()
 }
 
 impl GridMetrics {
@@ -1008,13 +1115,8 @@ impl GridMetrics {
         let width_m1 = width.saturating_sub(min_width);
         let cols_m1 = width_m1 / (min_width + column_spacing as usize);
         let cols = cols_m1 + 1;
-        let item_width = width
-            .saturating_sub(cols_m1 * column_spacing as usize)
-            .checked_div(cols)
-            .unwrap_or(0);
         Self {
             cols,
-            item_width,
             column_spacing,
         }
     }
@@ -1037,30 +1139,22 @@ fn bottom_bar_icon_fallback_name(app_id: &str) -> Cow<'static, str> {
     }
 }
 
-fn bottom_bar_app_icon_by_id(
-    apps: &[Arc<ApplicationEntry>],
-    app_id: &str,
-    size: u16,
-) -> cosmic::widget::icon::Icon {
-    if let Some(app) = apps.iter().find(|a| a.id == app_id) {
-        return app_icon(app, size as f32);
-    }
+fn bottom_bar_fallback_icon(app_id: &str, size: u16) -> cosmic::widget::icon::Icon {
     let fallback = bottom_bar_icon_fallback_name(app_id);
     icon::from_name(fallback)
         .symbolic(false)
-        .prefer_svg(true)
         .size(size)
         .fallback(Some(icon::IconFallback::Names(vec![
             "application-x-executable".into(),
             "application-default".into(),
         ])))
         .icon()
-        .width(Length::Fixed(size as f32))
-        .height(Length::Fixed(size as f32))
+        .width(Length::Fixed(f32::from(size)))
+        .height(Length::Fixed(f32::from(size)))
 }
 
 fn bottom_bar_pinned_item(
-    apps: &[Arc<ApplicationEntry>],
+    icon: cosmic::widget::icon::Icon,
     pinned_id: &str,
     label: Cow<'static, str>,
     hovered: bool,
@@ -1068,7 +1162,6 @@ fn bottom_bar_pinned_item(
     space_xxs: u16,
     space_xs: u16,
 ) -> Element<'static, Message> {
-    let icon = bottom_bar_app_icon_by_id(apps, pinned_id, 20);
     let launch_btn = bottom_bar_action_button(
         icon,
         label,
@@ -1300,8 +1393,6 @@ fn app_card_class(selected: bool, transparent_idle: bool) -> theme::Button {
 struct ListCardLayout {
     space_xxs: u16,
     space_s: u16,
-    text_width: f32,
-    width: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -1321,12 +1412,11 @@ fn app_grid_card(
     card_height: f32,
     space_xxs: u16,
 ) -> Element<'static, Message> {
-    let name = truncate_name(&app.name, 32).into_owned();
+    let name = app.name.clone();
     let inner = column![
         icon.width(Length::Fixed(icon_size))
             .height(Length::Fixed(icon_size)),
-        cosmic::widget::text::caption(name)
-            .wrapping(cosmic::iced::widget::text::Wrapping::Word),
+        single_line(name, true, true),
     ]
     .align_x(Alignment::Center)
     .spacing(space_xxs);
@@ -1376,31 +1466,20 @@ fn app_list_card(
     let summary = app
         .description
         .as_deref()
-        .map(|d| truncate_name(d, 60))
-        .unwrap_or_default()
-        .into_owned();
+        .map(|description| truncate_name(description, 80).into_owned())
+        .unwrap_or_default();
 
-    let effective_text_width = layout.text_width.max(40.0);
-
-    let name_row: Element<'static, Message> = cosmic::widget::text::body(app.name.clone())
-        .height(Length::Fixed(20.0))
-        .width(Length::Fixed(effective_text_width))
-        .wrapping(cosmic::iced::widget::text::Wrapping::Word)
-        .into();
-
-    let card_height = LIST_ICON_SIZE as f32 + (layout.space_xxs as f32) * 2.0;
-    let card_width = layout.width as f32;
+    let card_height = f32::from(LIST_ICON_SIZE) + f32::from(layout.space_xxs) * 2.0;
 
     let card_body = row![
         icon,
         column![
-            name_row,
-            cosmic::widget::text::caption(summary)
-                .height(Length::Fixed(28.0))
-                .width(Length::Fixed(effective_text_width))
-                .wrapping(cosmic::iced::widget::text::Wrapping::Word),
+            single_line(app.name.clone(), false, false),
+            single_line(summary, true, false),
         ]
-        .spacing(2),
+            .spacing(2)
+            .width(Length::Fill)
+            .padding([0.0, ACTION_ROW_HEIGHT * 2.0, 0.0, 0.0]),
     ]
     .align_y(Alignment::Center)
     .spacing(layout.space_s)
@@ -1430,7 +1509,7 @@ fn app_list_card(
     let btn = button::custom(card_content)
         .on_press(Message::LaunchApp(state.index))
         .padding([layout.space_xxs, layout.space_s])
-        .width(Length::Fixed(card_width))
+        .width(Length::Fill)
         .height(Length::Fixed(card_height))
         .class(app_list_card_class(state.is_selected));
 
@@ -1440,29 +1519,61 @@ fn app_list_card(
         .into()
 }
 
-pub(crate) fn app_icon(app: &ApplicationEntry, size: f32) -> cosmic::widget::icon::Icon {
-    let size_u16 = size as u16;
-    if let Some(ref name) = app.icon {
-        icon::from_name(name.clone())
-            .symbolic(false)
-            .prefer_svg(true)
-            .size(size_u16)
-            .fallback(Some(icon::IconFallback::Names(vec![
-                "application-x-executable".into(),
-                "application-default".into(),
-            ])))
-            .icon()
-            .width(Length::Fixed(size))
-            .height(Length::Fixed(size))
+fn single_line(content: String, caption: bool, centered: bool) -> Element<'static, Message> {
+    use cosmic::iced::alignment::Horizontal;
+    use cosmic::iced::core::text::EllipsizeHeightLimit;
+    use cosmic::iced::widget::text::{Ellipsize, Wrapping};
+    let ellipsize = Ellipsize::End(EllipsizeHeightLimit::Lines(1));
+    let align = if centered {
+        Horizontal::Center
     } else {
-        icon::from_name("application-x-executable")
-            .symbolic(false)
-            .prefer_svg(true)
-            .size(size_u16)
-            .icon()
-            .width(Length::Fixed(size))
-            .height(Length::Fixed(size))
+        Horizontal::Left
+    };
+    if caption {
+        cosmic::widget::text::caption(content)
+            .wrapping(Wrapping::None)
+            .ellipsize(ellipsize)
+            .align_x(align)
+            .width(Length::Fill)
+            .into()
+    } else {
+        cosmic::widget::text::body(content)
+            .wrapping(Wrapping::None)
+            .ellipsize(ellipsize)
+            .align_x(align)
+            .height(Length::Fixed(20.0))
+            .width(Length::Fill)
+            .into()
     }
+}
+
+fn app_icon_handle(name: Option<&str>, size: u16) -> cosmic::widget::icon::Handle {
+    let mut named = match name {
+        Some(name) => icon::from_name(name).fallback(Some(icon::IconFallback::Names(vec![
+            "application-x-executable".into(),
+            "application-default".into(),
+        ]))),
+        None => icon::from_name("application-x-executable"),
+    };
+    named.symbolic = false;
+    named.size = Some(size);
+    named.handle()
+}
+
+fn icon_widget(
+    handles: &AppIconHandles,
+    app: &ApplicationEntry,
+    size: u16,
+) -> cosmic::widget::icon::Icon {
+    let key = (app.icon.clone(), size);
+    let handle = handles
+        .get(&key)
+        .cloned()
+        .unwrap_or_else(|| app_icon_handle(app.icon.as_deref(), size));
+    icon::icon(handle)
+        .size(size)
+        .width(Length::Fixed(f32::from(size)))
+        .height(Length::Fixed(f32::from(size)))
 }
 
 fn truncate_name<'a>(name: &'a str, max_chars: usize) -> Cow<'a, str> {
@@ -1481,12 +1592,19 @@ fn truncate_name<'a>(name: &'a str, max_chars: usize) -> Cow<'a, str> {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_name;
+    use super::{truncate_name, visible_row_range};
 
     #[test]
     fn truncates_at_character_boundaries() {
         assert_eq!(truncate_name("short", 8), "short");
         assert_eq!(truncate_name("exact", 5), "exact");
         assert_eq!(truncate_name("aéioux", 5), "aéio…");
+    }
+
+    #[test]
+    fn visible_rows_include_one_row_of_overscan() {
+        assert_eq!(visible_row_range(0.0, 250.0, 100.0, 20), (0, 3));
+        assert_eq!(visible_row_range(400.0, 250.0, 100.0, 20), (3, 7));
+        assert_eq!(visible_row_range(10_000.0, 250.0, 100.0, 4), (3, 3));
     }
 }

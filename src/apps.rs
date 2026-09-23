@@ -2,7 +2,7 @@
 
 use crate::fl;
 use freedesktop_desktop_entry as fde;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,6 +21,8 @@ pub(crate) struct ApplicationEntry {
     pub icon: Option<Arc<str>>,
     /// Categories from the desktop file.
     pub categories: Vec<String>,
+    /// Menu group this app belongs to.
+    pub primary_category: Option<&'static str>,
     /// Generic name or description.
     pub description: Option<String>,
     /// Lowercase description used by search.
@@ -155,6 +157,14 @@ fn load_apps_from_dirs_for_desktops(
             .filter(|keyword| !keyword.is_empty())
             .map(|keyword| keyword.to_lowercase())
             .collect();
+        let categories: Vec<String> = desktop_entry
+            .categories()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|category| !category.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+        let primary_category = primary_category_key(&categories);
         let entry = ApplicationEntry {
             name_lower: name.to_lowercase(),
             desc_lower: description.as_ref().map(|value| value.to_lowercase()),
@@ -162,13 +172,8 @@ fn load_apps_from_dirs_for_desktops(
             name,
             exec,
             icon: desktop_entry.icon().map(Arc::from),
-            categories: desktop_entry
-                .categories()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|category| !category.is_empty())
-                .map(ToOwned::to_owned)
-                .collect(),
+            categories,
+            primary_category,
             description,
             keywords_lower,
             is_terminal: desktop_entry.terminal(),
@@ -321,10 +326,7 @@ fn group_display_name(key: &str) -> String {
 }
 
 pub(crate) fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<ApplicationCategory> {
-    let populated: HashSet<_> = apps
-        .iter()
-        .filter_map(|app| primary_category_key(&app.categories))
-        .collect();
+    let populated: HashSet<_> = apps.iter().filter_map(|app| app.primary_category).collect();
 
     let mut categories = Vec::new();
     for (group_key, icon_name, _source_keys) in CATEGORY_GROUPS {
@@ -337,9 +339,7 @@ pub(crate) fn load_categories(apps: &[Arc<ApplicationEntry>]) -> Vec<Application
         }
     }
 
-    let has_other = apps
-        .iter()
-        .any(|app| primary_category_key(&app.categories).is_none());
+    let has_other = apps.iter().any(|app| app.primary_category.is_none());
     if has_other {
         categories.push(ApplicationCategory {
             key: "Other".to_string(),
@@ -385,25 +385,33 @@ pub(crate) fn filter_apps_by_category(
     }
 
     if category.key == "Other" {
-        return apps.iter()
-            .filter(|app| primary_category_key(&app.categories).is_none())
+        return apps
+            .iter()
+            .filter(|app| app.primary_category.is_none())
             .cloned()
             .collect();
     }
 
+    let key = category.key.as_str();
     apps.iter()
-        .filter(|app| primary_category_key(&app.categories) == Some(category.key.as_str()))
+        .filter(|app| app.primary_category == Some(key))
         .cloned()
         .collect()
 }
 
-pub(crate) fn filter_by_ids(
+pub(crate) fn index_by_id(
     apps: &[Arc<ApplicationEntry>],
+) -> HashMap<String, Arc<ApplicationEntry>> {
+    apps.iter()
+        .map(|app| (app.id.clone(), Arc::clone(app)))
+        .collect()
+}
+
+pub(crate) fn filter_by_ids(
+    by_id: &HashMap<String, Arc<ApplicationEntry>>,
     ids: &[String],
 ) -> Vec<Arc<ApplicationEntry>> {
-    ids.iter()
-        .filter_map(|id| apps.iter().find(|a| a.id == *id).cloned())
-        .collect()
+    ids.iter().filter_map(|id| by_id.get(id).cloned()).collect()
 }
 
 #[cfg(test)]
@@ -474,6 +482,7 @@ mod tests {
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].id, "nested-visible.desktop");
         assert_eq!(apps[0].keywords_lower, ["needle"]);
+        assert_eq!(apps[0].primary_category, None);
 
         fs::remove_dir_all(root).unwrap();
     }

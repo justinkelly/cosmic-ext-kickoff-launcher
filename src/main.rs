@@ -10,7 +10,7 @@ mod panel_icons;
 mod power;
 mod view;
 
-use app::Applet;
+use app::{Applet, Flags};
 use config::{AppletConfig, MIN_CUSTOM_HEIGHT, MIN_CUSTOM_WIDTH};
 use cosmic::cosmic_config::CosmicConfigEntry;
 use cosmic::iced::{Limits, Size};
@@ -30,7 +30,8 @@ fn main() -> cosmic::iced::Result {
 
     // The panel proxies the applet's Wayland connection, so standalone mode
     // must start as a regular application.
-    if std::env::args().any(|a| a == "--window") {
+    let window_mode = std::env::args().any(|arg| arg == "--window");
+    if window_mode {
         let size = menu_window_size();
         cosmic::app::run::<Applet>(
             cosmic::app::Settings::default()
@@ -41,10 +42,10 @@ fn main() -> cosmic::iced::Result {
                         .min_height(MIN_CUSTOM_HEIGHT),
                 )
                 .resizable(Some(8.0)),
-            (),
+            Flags { window: true },
         )
     } else {
-        cosmic::applet::run::<Applet>(())
+        cosmic::applet::run::<Applet>(Flags { window: false })
     }
 }
 
