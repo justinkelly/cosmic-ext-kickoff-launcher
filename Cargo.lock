@@ -951,6 +951,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cosmic-ext-kickoff-launcher"
+version = "0.1.0"
+dependencies = [
+ "freedesktop-desktop-entry",
+ "i18n-embed",
+ "i18n-embed-fl",
+ "libcosmic",
+ "rust-embed",
+ "serde",
+ "shlex 1.3.0",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "xdgen",
+ "zbus",
+]
+
+[[package]]
 name = "cosmic-freedesktop-icons"
 version = "0.4.0"
 source = "git+https://github.com/pop-os/freedesktop-icons#ab4c57b8e416c6af9297cb04d101889896fd9a92"
@@ -2820,25 +2839,6 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
-
-[[package]]
-name = "cosmic-ext-kickoff-launcher"
-version = "0.1.0"
-dependencies = [
- "freedesktop-desktop-entry",
- "i18n-embed",
- "i18n-embed-fl",
- "libcosmic",
- "rust-embed",
- "serde",
- "shlex 1.3.0",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "xdgen",
- "zbus",
-]
 
 [[package]]
 name = "known-folders"
