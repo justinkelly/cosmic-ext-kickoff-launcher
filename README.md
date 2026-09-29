@@ -20,9 +20,9 @@ Choose how apps are shown. Hybrid uses the grid for Favourites and Recents, and 
 
 <table>
   <tr>
-    <td><img src="screenshots/all-apps-grid.png" width="250" alt="All Applications shown as a grid of app icons"><br><strong>Grid</strong><br>Browse apps by their icons.</td>
-    <td><img src="screenshots/list-view.png" width="250" alt="Applications shown in a list with names and descriptions"><br><strong>List</strong><br>See app names and descriptions in rows.</td>
-    <td><img src="screenshots/recent-apps.png" width="250" alt="Recents shown as a grid in the hybrid layout"><br><strong>Hybrid</strong><br>Favourites and Recents use the grid; other categories use the list.</td>
+    <td><img src="screenshots/all-apps-grid.png" width="250" height="307" alt="All Applications shown as a grid of app icons"><br><strong>Grid</strong><br>Browse apps by their icons.</td>
+    <td><img src="screenshots/list-view.png" width="250" height="307" alt="Applications shown in a list with names and descriptions"><br><strong>List</strong><br>See app names and descriptions in rows.</td>
+    <td><img src="screenshots/recent-apps.png" width="250" height="307" alt="Recents shown as a grid in the hybrid layout"><br><strong>Hybrid</strong><br>Favourites and Recents use the grid; other categories use the list.</td>
   </tr>
 </table>
 
@@ -30,28 +30,28 @@ Choose how apps are shown. Hybrid uses the grid for Favourites and Recents, and 
 
 <table>
   <tr>
-    <td><img src="screenshots/recent-apps.png" width="380" alt="Kickoff Launcher showing the Recents category in grid layout"><br><strong>Recent apps</strong><br>Apps you have opened recently appear here.</td>
-    <td><img src="screenshots/favourites.png" width="380" alt="Kickoff Launcher showing favourite apps in grid layout"><br><strong>Favourites</strong><br>Your favourite apps in a grid, with the category list alongside.</td>
+    <td><img src="screenshots/recent-apps.png" width="380" height="466" alt="Kickoff Launcher showing the Recents category in grid layout"><br><strong>Recent apps</strong><br>Apps you have opened recently appear here.</td>
+    <td><img src="screenshots/favourites.png" width="380" height="466" alt="Kickoff Launcher showing favourite apps in grid layout"><br><strong>Favourites</strong><br>Your favourite apps in a grid, with the category list alongside.</td>
   </tr>
   <tr>
-    <td><img src="screenshots/list-view.png" width="380" alt="Kickoff Launcher showing applications in list layout"><br><strong>List view</strong><br>Apps appear with their names and descriptions.</td>
-    <td><img src="screenshots/appearance-settings.png" width="380" alt="Kickoff Launcher appearance settings and panel icon picker"><br><strong>Appearance settings</strong><br>Set the layout and menu size, and choose a panel icon.</td>
+    <td><img src="screenshots/list-view.png" width="380" height="466" alt="Kickoff Launcher showing applications in list layout"><br><strong>List view</strong><br>Apps appear with their names and descriptions.</td>
+    <td><img src="screenshots/appearance-settings.png" width="380" height="466" alt="Kickoff Launcher appearance settings and panel icon picker"><br><strong>Appearance settings</strong><br>Set the layout and menu size, and choose a panel icon.</td>
   </tr>
   <tr>
-    <td><img src="screenshots/all-apps-grid.png" width="380" alt="Kickoff Launcher showing all applications in a grid"><br><strong>All applications</strong><br>Browse installed apps by category.</td>
-    <td><img src="screenshots/collapsed-sidebar.png" width="380" alt="Kickoff Launcher with the sidebar collapsed"><br><strong>Collapsed sidebar</strong><br>Collapse the sidebar to make more room for apps.</td>
+    <td><img src="screenshots/all-apps-grid.png" width="380" height="466" alt="Kickoff Launcher showing all applications in a grid"><br><strong>All applications</strong><br>Browse installed apps by category.</td>
+    <td><img src="screenshots/collapsed-sidebar.png" width="380" height="466" alt="Kickoff Launcher with the sidebar collapsed"><br><strong>Collapsed sidebar</strong><br>Collapse the sidebar to make more room for apps.</td>
   </tr>
   <tr>
-    <td><img src="screenshots/search.png" width="380" alt="Kickoff Launcher searching for COSMIC applications"><br><strong>Search</strong><br>Type to narrow the list of apps.</td>
-    <td><img src="screenshots/sidebar-settings.png" width="380" alt="Kickoff Launcher sidebar and bottom bar settings"><br><strong>Sidebar and bottom bar</strong><br>Choose which sections and controls to show.</td>
+    <td><img src="screenshots/search.png" width="380" height="466" alt="Kickoff Launcher searching for COSMIC applications"><br><strong>Search</strong><br>Type to narrow the list of apps.</td>
+    <td><img src="screenshots/sidebar-settings.png" width="380" height="466" alt="Kickoff Launcher sidebar and bottom bar settings"><br><strong>Sidebar and bottom bar</strong><br>Choose which sections and controls to show.</td>
   </tr>
   <tr>
-    <td><img src="screenshots/bottom-bar-without-pinned-apps.png" width="380" alt="Kickoff Launcher settings with pinned apps hidden from the bottom bar"><br><strong>Bottom bar without pinned apps</strong><br>Hide pinned apps while keeping the power controls.</td>
-    <td><img src="screenshots/bottom-bar-hidden.png" width="380" alt="Kickoff Launcher menu with the bottom bar hidden"><br><strong>Bottom bar hidden</strong><br>Turn off both options to remove the bar.</td>
+    <td><img src="screenshots/bottom-bar-without-pinned-apps.png" width="380" height="466" alt="Kickoff Launcher settings with pinned apps hidden from the bottom bar"><br><strong>Bottom bar without pinned apps</strong><br>Hide pinned apps while keeping the power controls.</td>
+    <td><img src="screenshots/bottom-bar-hidden.png" width="380" height="466" alt="Kickoff Launcher menu with the bottom bar hidden"><br><strong>Bottom bar hidden</strong><br>Turn off both options to remove the bar.</td>
   </tr>
   <tr>
-    <td><img src="screenshots/favourites-default-compact.png" width="380" alt="Kickoff Launcher showing favourites as the default view with the sidebar hidden and power actions visible"><br><strong>Compact favourites view</strong><br>Favourites opens by default, with the sidebar and pinned apps hidden. Power controls remain in the bottom bar.</td>
-    <td><img src="screenshots/windowed-mode.png" width="380" alt="Kickoff Launcher running in a standalone desktop window"><br><strong>Standalone window</strong><br>The launcher can also run in its own desktop window.</td>
+    <td><img src="screenshots/favourites-default-compact.png" width="380" height="466" alt="Kickoff Launcher showing favourites as the default view with the sidebar hidden and power actions visible"><br><strong>Compact favourites view</strong><br>Favourites opens by default, with the sidebar and pinned apps hidden. Power controls remain in the bottom bar.</td>
+    <td><img src="screenshots/windowed-mode.png" width="380" height="466" alt="Kickoff Launcher running in a standalone desktop window"><br><strong>Standalone window</strong><br>The launcher can also run in its own desktop window.</td>
   </tr>
 </table>
 
@@ -61,8 +61,8 @@ Settings are grouped into Appearance, Sidebar, Bottom Bar and Default Menu.
 
 <table>
   <tr>
-    <td><img src="screenshots/settings-appearance.png" width="380" alt="Appearance settings for layout, menu size, panel icon, and monochrome icon"><br><strong>Appearance</strong></td>
-    <td><img src="screenshots/settings-sidebar-bottom-bar.png" width="380" alt="Settings for sidebar visibility, bottom bar items, and default category"><br><strong>Sidebar, bottom bar, and default menu</strong></td>
+    <td><img src="screenshots/settings-appearance.png" width="380" height="466" alt="Appearance settings for layout, menu size, panel icon, and monochrome icon"><br><strong>Appearance</strong></td>
+    <td><img src="screenshots/settings-sidebar-bottom-bar.png" width="380" height="466" alt="Settings for sidebar visibility, bottom bar items, and default category"><br><strong>Sidebar, bottom bar, and default menu</strong></td>
   </tr>
 </table>
 
