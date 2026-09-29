@@ -3,22 +3,22 @@
   <id>com.github.cosmic-kickoff-launcher</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
-  <name>Kickoff Launcher for COSMIC™</name>
-  <summary>A KDE-style application menu</summary>
+  <name>Kickoff Launcher for the COSMIC™ desktop</name>
+  <summary>A KDE-style application menu for the COSMIC™ desktop</summary>
   <description>
     <p>
       Browse, search, favourite, pin, and launch installed applications from a
       keyboard-, pointer-, and touch-friendly COSMIC panel menu.
     </p>
   </description>
-  <url type="homepage">https://github.com/pop-os/cosmic-epoch</url>
+  <url type="homepage">https://github.com/justinkelly/cosmic-ext-kickoff-launcher</url>
   <developer id="com.github.cosmic-kickoff-launcher">
     <name>Kickoff Launcher contributors</name>
   </developer>
   <launchable type="desktop-id">com.github.cosmic-kickoff-launcher.desktop</launchable>
   <provides>
     <id>com.system76.CosmicApplet</id>
-    <binary>kickoff-launcher-for-cosmic</binary>
+    <binary>cosmic-ext-kickoff-launcher</binary>
   </provides>
   <requires>
     <display_length compare="ge">400</display_length>

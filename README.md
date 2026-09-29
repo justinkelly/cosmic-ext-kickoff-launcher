@@ -1,4 +1,4 @@
-# Kickoff Launcher for COSMIC™
+# Kickoff Launcher for the COSMIC™ desktop
 
 A KDE Kickoff-style application menu applet for the [COSMIC™ desktop](https://github.com/pop-os/cosmic-epoch), built with [libcosmic](https://github.com/pop-os/libcosmic).
 

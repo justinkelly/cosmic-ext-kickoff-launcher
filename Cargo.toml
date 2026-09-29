@@ -1,9 +1,9 @@
 [package]
-name = "kickoff-launcher-for-cosmic"
+name = "cosmic-ext-kickoff-launcher"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
-description = "A KDE-style application menu applet for COSMIC"
+description = "A KDE-style application menu applet for the COSMIC™ desktop"
 
 [build-dependencies]
 xdgen = "0.1"

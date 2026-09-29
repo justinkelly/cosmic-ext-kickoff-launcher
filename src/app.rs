@@ -252,7 +252,7 @@ fn message_update(applet: &mut Applet, message: Message) -> Task<Message> {
             // Toplevels created through the applet's proxied connection are
             // embedded in the panel, so standalone mode needs a new process.
             let exe = std::env::current_exe()
-                .unwrap_or_else(|_| std::path::PathBuf::from("kickoff-launcher-for-cosmic"));
+                .unwrap_or_else(|_| std::path::PathBuf::from("cosmic-ext-kickoff-launcher"));
             let mut command = std::process::Command::new(exe);
             command.arg("--window");
             let spawn = launch::spawn_command(command);
