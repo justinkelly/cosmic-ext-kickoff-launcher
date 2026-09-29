@@ -89,13 +89,35 @@ Settings are grouped into Appearance, Sidebar, Bottom Bar and Default Menu.
 
 ## Building
 
+Clone the repository and enter the project directory:
+
 ```
-just              # build-release
-just run          # build and run
-just install-user # install for the current user (no root required)
-just install      # install system-wide (requires sudo)
-just run-window   # build and run the menu in a standalone window
-just check        # clippy with pedantic warnings
+git clone https://github.com/justinkelly/cosmic-ext-kickoff-launcher.git
+cd cosmic-ext-kickoff-launcher
+```
+
+Build and install for your user with:
+
+```
+just install-user
+```
+
+To reload the applet after installing, restart the COSMIC panel:
+
+```
+pkill -x cosmic-panel
+```
+
+COSMIC Session should start the panel again. If it does not, log out and back in.
+
+Other useful `just` recipes:
+
+```
+just build-release # build an optimised binary
+just run           # build and run
+just run-window    # build and run in a standalone window
+just install       # install system-wide (requires sudo)
+just check         # clippy with pedantic warnings
 ```
 
 ## Licence
