@@ -1,6 +1,8 @@
 [Desktop Entry]
 Name=Kickoff Launcher for the COSMIC™ desktop
+Name[pl]=Uruchamiacz Kickoff dla środowiska COSMIC™
 Comment=A KDE-style application menu for the COSMIC™ desktop
+Comment[pl]=Menu aplikacji w stylu KDE dla środowiska COSMIC™
 Type=Application
 Icon=com.github.justinkelly.cosmic-ext-kickoff-launcher
 Exec=cosmic-ext-kickoff-launcher
@@ -8,6 +10,7 @@ Terminal=false
 StartupNotify=true
 Categories=Utility;COSMIC;
 Keywords=COSMIC;Kickoff;Menu;Launcher;
+Keywords[pl]=COSMIC;Kickoff;Menu;Uruchamiacz;Program;Uruchamiający;
 NoDisplay=true
 X-CosmicApplet=true
 X-CosmicHoverPopup=Auto

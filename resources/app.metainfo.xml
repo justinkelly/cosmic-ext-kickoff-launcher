@@ -4,12 +4,17 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
   <name>Kickoff Launcher for the COSMIC™ desktop</name>
+  <name xml:lang="pl">Uruchamiacz Kickoff dla środowiska COSMIC™</name>
   <summary>A KDE-style application menu for the COSMIC™ desktop</summary>
+  <summary xml:lang="pl">Menu aplikacji w stylu KDE dla środowiska COSMIC™</summary>
   <description>
     <p>
       Browse, search, favourite, pin and launch installed applications from
       the COSMIC panel. Grid, list and hybrid layouts, with a choice of menu
       size and panel icon.
+    </p>
+    <p xml:lang="pl">
+      Przeglądaj, wyszukuj, dodawaj do ulubionych, przypinaj i uruchamiaj zainstalowane aplikacje z panelu COSMIC. Układy hybrydowe, lista lub siatkowe. Możliwość dopasowania rozmiaru menu i ikon na panelu.
     </p>
   </description>
   <url type="homepage">https://github.com/justinkelly/cosmic-ext-kickoff-launcher</url>
@@ -37,6 +42,8 @@
   <categories>
     <category>Utility</category>
     <category>COSMIC</category>
+    <category xml:lang="pl">Użytkowe</category>
+    <category xml:lang="pl">COSMIC</category>
   </categories>
   <keywords>
     <keyword>COSMIC</keyword>
@@ -44,26 +51,32 @@
   <screenshots>
     <screenshot type="default">
       <caption>All applications in a grid</caption>
+      <caption xml:lang="pl">Wszystkie aplikacje w układzie siatki</caption>
       <image>https://raw.githubusercontent.com/justinkelly/cosmic-ext-kickoff-launcher/main/screenshots/all-apps-grid.png</image>
     </screenshot>
     <screenshot>
       <caption>Applications in a list</caption>
+      <caption xml:lang="pl">Aplikacje jako lista</caption>
       <image>https://raw.githubusercontent.com/justinkelly/cosmic-ext-kickoff-launcher/main/screenshots/list-view.png</image>
     </screenshot>
     <screenshot>
       <caption>Search by name, description, and keywords</caption>
+      <caption xml:lang="pl">Wyszukuj po nazwie, opisie lub słowach kluczowych</caption>
       <image>https://raw.githubusercontent.com/justinkelly/cosmic-ext-kickoff-launcher/main/screenshots/search-results.png</image>
     </screenshot>
     <screenshot>
       <caption>Favourite applications</caption>
+      <caption xml:lang="pl">Ulubione aplikacje</caption>
       <image>https://raw.githubusercontent.com/justinkelly/cosmic-ext-kickoff-launcher/main/screenshots/favourites.png</image>
     </screenshot>
     <screenshot>
       <caption>Light mode</caption>
+      <caption xml:lang="pl">Tryb jasny</caption>
       <image>https://raw.githubusercontent.com/justinkelly/cosmic-ext-kickoff-launcher/main/screenshots/light-mode.png</image>
     </screenshot>
     <screenshot>
       <caption>Appearance settings</caption>
+      <caption xml:lang="pl">Ustawienia wyglądu</caption>
       <image>https://raw.githubusercontent.com/justinkelly/cosmic-ext-kickoff-launcher/main/screenshots/appearance-settings.png</image>
     </screenshot>
   </screenshots>
